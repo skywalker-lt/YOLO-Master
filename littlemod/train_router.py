@@ -69,6 +69,21 @@ def eval_recall(model, detect_idx, level, router, loader, dev, imgsz, small_thre
     return {r: (cov[r] / tot[r] if tot[r] else 0.0) for r in RHOS}
 
 
+@torch.no_grad()
+def oracle_ceiling(loader, dev, imgsz, gh, gw, stride, small_thresh):
+    """Recall@rho using S = the true density D — the max achievable at this grid/rho/small-thresh.
+    If this is < ~0.97 @0.2, no router can beat it -> fix the grid/target, not the router."""
+    cov = {r: 0.0 for r in RHOS}; tot = {r: 0 for r in RHOS}
+    for batch in loader:
+        b = batch["img"].shape[0]
+        bx = batch["bboxes"].to(dev); bi = batch["batch_idx"].to(dev)
+        d = build_density_target(bx, bi, b, (gh, gw), imgsz, stride, small_thresh)
+        for r in RHOS:
+            rec, n = router_recall_at_rho(d, bx, bi, b, (gh, gw), imgsz, r, small_thresh)
+            cov[r] += rec * n; tot[r] += n
+    return {r: (cov[r] / tot[r] if tot[r] else 0.0) for r in RHOS}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--weights", default="runs/baseline/EsMoE-N_VisDrone/weights/best.pt")
@@ -113,6 +128,10 @@ def main():
     real_stride = a.imgsz // gw
     LOGGER.info(f"[step1] level={a.level} feature=[{c_in},{gh},{gw}] stride={real_stride} k(20%)={int(0.2*gh*gw)}")
 
+    ceil = oracle_ceiling(val_loader, dev, a.imgsz, gh, gw, real_stride, a.small_thresh)
+    LOGGER.info("[step1] ORACLE ceiling (S=D): " + " ".join(f"R@{r}={ceil[r]:.3f}" for r in RHOS)
+                + "  <- the trained router can't exceed this; if R@0.2 < ~0.97 fix grid/target, not the router")
+
     router = DensityRouter(c_in, reduction=a.reduction).to(dev)
     crit = DensityLoss(lambda_dice=a.lambda_dice)
     opt = torch.optim.AdamW(router.parameters(), lr=a.lr, weight_decay=1e-4)
@@ -139,7 +158,7 @@ def main():
                                      img.shape[0], (gh, gw), a.imgsz, real_stride, a.small_thresh)
             loss, parts = crit(s, d)
             opt.zero_grad(); loss.backward(); opt.step()
-            run_loss += float(loss); run_qfl += parts["qfl"]; run_dice += parts["dice"]; nb += 1
+            run_loss += float(loss.detach()); run_qfl += parts["qfl"]; run_dice += parts["dice"]; nb += 1
         sched.step()
         rec = eval_recall(model, detect_idx, a.level, router, val_loader, dev, a.imgsz, a.small_thresh)
         row = [ep, run_loss / nb, run_qfl / nb, run_dice / nb] + [rec[r] for r in RHOS]
