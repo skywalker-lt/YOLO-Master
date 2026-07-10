@@ -9,8 +9,21 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
-from ultralytics.utils.loss import VarifocalLoss
+
+def quality_focal_loss(pred_logits: torch.Tensor, target: torch.Tensor, beta: float = 2.0) -> torch.Tensor:
+    """QFL / Generalized Focal Loss for a CONTINUOUS [0,1] target (Li et al. 2020).
+
+    -|y - sigma(x)|^beta * BCE(x, y), computed via BCE-with-logits for stability. Unlike the repo's
+    VarifocalLoss (asymmetric, suppresses negatives -> flat output), QFL weights every cell by how far
+    its prediction is from the density target, so it drives the router to match D's *ranking*, not to
+    collapse to zero. No equivalent exists in ultralytics (grep-confirmed), hence built here.
+    """
+    p = pred_logits.sigmoid()
+    modulator = (target - p).abs().pow(beta)
+    bce = F.binary_cross_entropy_with_logits(pred_logits, target, reduction="none")
+    return (modulator * bce).mean()
 
 
 def dice_loss(pred_prob: torch.Tensor, target: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
@@ -24,19 +37,13 @@ def dice_loss(pred_prob: torch.Tensor, target: torch.Tensor, eps: float = 1e-6) 
 class DensityLoss(nn.Module):
     """L_dens = QFL(S, D) + lambda_dice * Dice(sigmoid(S), D)."""
 
-    def __init__(self, lambda_dice: float = 1.0, fg_thresh: float = 0.0):
+    def __init__(self, lambda_dice: float = 1.0, beta: float = 2.0):
         super().__init__()
-        self.vfl = VarifocalLoss()          # QFL surrogate: quality-aware focal BCE on logits
         self.lambda_dice = lambda_dice
-        self.fg_thresh = fg_thresh
+        self.beta = beta
 
     def forward(self, s_logits: torch.Tensor, d: torch.Tensor) -> tuple[torch.Tensor, dict]:
-        """s_logits, d: [B,1,gh,gw]. VarifocalLoss wants [B, n] and reduces mean(1).sum()."""
-        b = s_logits.shape[0]
-        pred = s_logits.reshape(b, -1)
-        gt = d.reshape(b, -1)
-        label = (gt > self.fg_thresh).float()               # foreground indicator
-        qfl = self.vfl(pred, gt, label) / max(b, 1)          # -> per-image mean
+        qfl = quality_focal_loss(s_logits, d, self.beta)
         dice = dice_loss(s_logits.sigmoid(), d)
         return qfl + self.lambda_dice * dice, {"qfl": float(qfl.detach()), "dice": float(dice.detach())}
 
