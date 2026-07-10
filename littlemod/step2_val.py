@@ -26,7 +26,7 @@ class MaskedValidator(DetectionValidator):
     mask_mode in {dense, base, sparse}, grid, rho, small_thresh, stride_p2."""
 
     mask_mode = "dense"
-    grid = 40
+    routing_stride = 16
     rho = 0.2
     small_thresh = 64.0
     stride_p2 = 4
@@ -45,17 +45,18 @@ class MaskedValidator(DetectionValidator):
         return super().postprocess(preds)
 
     def _apply_mask(self, y):
-        imgsz = self._batch["img"].shape[-1]
-        ps = imgsz // self.stride_p2
-        n_p2 = ps * ps
+        H, W = int(self._batch["img"].shape[-2]), int(self._batch["img"].shape[-1])
+        ps = self.stride_p2
+        ph, pw = H // ps, W // ps                       # P2 feature grid (rect)
+        n_p2 = ph * pw
         if self.mask_mode == "base":
             y[:, 4:, :n_p2] = 0.0
             return y
-        gh = gw = self.grid
-        if self._p2cell is None or self._p2cell.numel() != n_p2 or self._p2cell.device != y.device:
-            idx = torch.arange(n_p2, device=y.device)
-            gy, gx = idx // ps, idx % ps
-            self._p2cell = ((gy * gh) // ps) * gw + ((gx * gw) // ps)
+        rr = max(1, self.routing_stride // ps)          # P2 cells per routing cell (16//4=4)
+        gh, gw = ph // rr, pw // rr
+        idx = torch.arange(n_p2, device=y.device)
+        gy, gx = idx // pw, idx % pw
+        p2cell = (gy // rr).clamp(max=gh - 1) * gw + (gx // rr).clamp(max=gw - 1)   # rect-aware cell id
         k = max(1, round(self.rho * gh * gw))
         for b in range(y.shape[0]):
             m = self._batch["batch_idx"] == b
@@ -63,14 +64,13 @@ class MaskedValidator(DetectionValidator):
                 y[b, 4:, :n_p2] = 0.0
                 continue
             d = build_density_target(self._batch["bboxes"][m], torch.zeros(int(m.sum()), device=y.device),
-                                     1, (gh, gw), imgsz, imgsz // gh, self.small_thresh)
-            keepcell = torch.topk(d.reshape(-1), k).indices
-            keep = torch.isin(self._p2cell, keepcell)
+                                     1, (gh, gw), W, self.routing_stride, self.small_thresh)
+            keepcell = torch.topk(d.reshape(-1), min(k, gh * gw)).indices
+            keep = torch.isin(p2cell, keepcell)
             y[b, 4:, :n_p2][:, ~keep] = 0.0
         return y
 
-
-def run(weights, mode, grid, rho, small_thresh, data, imgsz, batch, workers):
+def run(weights, mode, routing_stride, rho, small_thresh, data, imgsz, batch, workers):
     ym = YOLO(weights)
     try:
         from ultralytics.nn.modules.moe.modules import ES_MOE
@@ -84,7 +84,7 @@ def run(weights, mode, grid, rho, small_thresh, data, imgsz, batch, workers):
     args.conf, args.iou, args.rect, args.split = 0.001, 0.7, True, "val"
     args.plots, args.verbose, args.save_json = False, False, False
     v = MaskedValidator(args=args)
-    v.mask_mode, v.grid, v.rho, v.small_thresh = mode, grid, rho, small_thresh
+    v.mask_mode, v.routing_stride, v.rho, v.small_thresh = mode, routing_stride, rho, small_thresh
     v.stride_p2 = int(ym.model.model[-1].stride[0])
     m = v(model=ym.model)
     return float(m["metrics/mAP50(B)"]), float(m["metrics/mAP50-95(B)"])
@@ -97,7 +97,7 @@ def main():
     ap.add_argument("--data", default="VisDrone.yaml")
     ap.add_argument("--datasets-dir", default="/data/datasets")
     ap.add_argument("--imgsz", type=int, default=640)
-    ap.add_argument("--grid", type=int, default=40)
+    ap.add_argument("--routing-stride", type=int, default=16, help="16 (~40x40 grid) or 32 (~20x20)")
     ap.add_argument("--rho", type=float, default=0.15)
     ap.add_argument("--small-thresh", type=float, default=64.0)
     ap.add_argument("--batch", type=int, default=32)
@@ -106,9 +106,9 @@ def main():
     SETTINGS["datasets_dir"] = a.datasets_dir
 
     LOGGER.info("[step2-cal] official-validator eval (DetMetrics, rect=True)")
-    b50, b = run(a.baseline_weights, "dense", a.grid, a.rho, a.small_thresh, a.data, a.imgsz, a.batch, a.workers)
-    d50, d = run(a.weights, "dense", a.grid, a.rho, a.small_thresh, a.data, a.imgsz, a.batch, a.workers)
-    s50, s = run(a.weights, "sparse", a.grid, a.rho, a.small_thresh, a.data, a.imgsz, a.batch, a.workers)
+    b50, b = run(a.baseline_weights, "dense", a.routing_stride, a.rho, a.small_thresh, a.data, a.imgsz, a.batch, a.workers)
+    d50, d = run(a.weights, "dense", a.routing_stride, a.rho, a.small_thresh, a.data, a.imgsz, a.batch, a.workers)
+    s50, s = run(a.weights, "sparse", a.routing_stride, a.rho, a.small_thresh, a.data, a.imgsz, a.batch, a.workers)
     LOGGER.info(f"  baseline (no P2)   : mAP50={b50:.4f}  mAP50-95={b:.4f}")
     LOGGER.info(f"  dense P2           : mAP50={d50:.4f}  mAP50-95={d:.4f}")
     LOGGER.info(f"  sparse P2 (rho={a.rho}): mAP50={s50:.4f}  mAP50-95={s:.4f}")
