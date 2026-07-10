@@ -55,7 +55,7 @@ def match(det, gt_box, gt_cls):
     return correct
 
 
-def evaluate(model, loader, dev, imgsz, grid, rho, stride_p2, small_thresh, conf, iou_nms, max_det, limit=0):
+def evaluate(model, baseline_model, loader, dev, imgsz, grid, rho, stride_p2, small_thresh, conf, iou_nms, max_det, limit=0):
     """Return {cond: (mAP50, mAP5095)} for base/dense/sparse, plus small-only variants."""
     gh = gw = grid
     p2_side = imgsz // stride_p2                                        # 160 for 640/4
@@ -73,7 +73,8 @@ def evaluate(model, loader, dev, imgsz, grid, rho, stride_p2, small_thresh, conf
             break
         img = batch["img"].to(dev).float() / 255
         with torch.no_grad():
-            y = model(img)[0]                                          # [B, 4+nc, N] decoded (xywh px, cls sig)
+            y = model(img)[0]                                          # P2 model [B, 4+nc, N]
+            yb = baseline_model(img)[0] if baseline_model is not None else None   # real standalone baseline
         B = img.shape[0]
         for b in range(B):
             # GT for this image (letterbox-normalized xywh -> px xyxy)
@@ -90,12 +91,17 @@ def evaluate(model, loader, dev, imgsz, grid, rho, stride_p2, small_thresh, conf
                 k = max(1, int(round(rho * gh * gw)))
                 keepcell = torch.topk(d.reshape(-1), k).indices
             for cond in conds:
-                yc = y[b:b + 1].clone()
                 if cond == "base":
-                    yc[:, 4:, :n_p2] = 0.0
+                    if baseline_model is not None:
+                        yc = yb[b:b + 1]                                # standalone baseline, full output
+                    else:
+                        yc = y[b:b + 1].clone(); yc[:, 4:, :n_p2] = 0.0  # (fallback: crippled masked-P2)
                 elif cond == "sparse" and keepcell is not None:
+                    yc = y[b:b + 1].clone()
                     keep = torch.isin(p2_cell, keepcell)
                     yc[:, 4:, :n_p2][:, :, ~keep] = 0.0
+                else:                                                   # dense
+                    yc = y[b:b + 1].clone()
                 det = non_max_suppression(yc, conf, iou_nms, max_det=max_det)[0]   # [n,6] xyxy conf cls
                 tp = match(det, gtb, gtc)
                 for st, mask in ((stats, None), (stats_s, gsz)):
@@ -118,7 +124,8 @@ def evaluate(model, loader, dev, imgsz, grid, rho, stride_p2, small_thresh, conf
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--weights", required=True)
+    ap.add_argument("--weights", required=True, help="4-scale P2 model")
+    ap.add_argument("--baseline-weights", default="runs/baseline/EsMoE-N_VisDrone/weights/best.pt", help="standalone no-P2 baseline for the base row")
     ap.add_argument("--data", default="VisDrone.yaml")
     ap.add_argument("--datasets-dir", default="/data/datasets")
     ap.add_argument("--imgsz", type=int, default=640)
@@ -152,10 +159,22 @@ def main():
                 mod.use_sparse_inference = False
     except Exception:
         pass
+    baseline_model = None
+    if a.baseline_weights:
+        baseline_model = YOLO(a.baseline_weights).model.to(dev).eval()
+        for p in baseline_model.parameters():
+            p.requires_grad_(False)
+        try:
+            from ultralytics.nn.modules.moe.modules import ES_MOE
+            for mod in baseline_model.modules():
+                if isinstance(mod, ES_MOE):
+                    mod.use_sparse_inference = False
+        except Exception:
+            pass
     stride_p2 = int(model.model[-1].stride[0])
     LOGGER.info(f"[step2] grid={a.grid} rho={a.rho} P2 stride={stride_p2} ({a.imgsz//stride_p2}x{a.imgsz//stride_p2})")
 
-    allm, sm = evaluate(model, loader, dev, a.imgsz, a.grid, a.rho, stride_p2, a.small_thresh,
+    allm, sm = evaluate(model, baseline_model, loader, dev, a.imgsz, a.grid, a.rho, stride_p2, a.small_thresh,
                         a.conf, a.iou, a.max_det, a.limit)
     LOGGER.info("[step2] === mAP (all objects) ===")
     for c in ("base", "dense", "sparse"):
