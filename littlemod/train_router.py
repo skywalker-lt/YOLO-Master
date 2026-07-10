@@ -121,6 +121,18 @@ def main():
         p.requires_grad_(False)
     detect_idx = len(model.model) - 1
 
+    # DENSE MoE inference — the default sparse path collapses EsMoE features (the same reason
+    # --no-sparse-eval exists); dense gave the router +0.20 R@0.2 in probing. No-op on non-MoE models.
+    try:
+        from ultralytics.nn.modules.moe.modules import ES_MOE
+        n_moe = 0
+        for mod in model.modules():
+            if isinstance(mod, ES_MOE):
+                mod.use_sparse_inference = False; n_moe += 1
+        LOGGER.info(f"[step1] dense MoE inference: use_sparse_inference=False on {n_moe} ES_MOE module(s)")
+    except Exception as e:
+        LOGGER.warning(f"[step1] could not set dense MoE inference ({e})")
+
     # probe one batch to size the router (channels of the chosen level) + confirm grid
     probe = next(iter(train_loader))
     pf = neck_feature(model, detect_idx, a.level, probe["img"].to(dev).float() / 255)
