@@ -95,6 +95,8 @@ def main():
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--no-augment", action="store_true", help="disable mosaic/scale/flip (clean supervision)")
+    ap.add_argument("--mixup", type=float, default=0.0, help="mixup prob (extra variety; 0.1-0.15 typical)")
     ap.add_argument("--router-c", type=int, default=64, help="router channel width")
     ap.add_argument("--router-layers", type=int, default=3, help="router 3x3 conv layers")
     ap.add_argument("--small-thresh", type=float, default=64.0)
@@ -110,7 +112,13 @@ def main():
     # data (auto-downloads VisDrone on first run)
     cfg = get_cfg(DEFAULT_CFG)
     cfg.imgsz = a.imgsz
-    cfg.mosaic = 0.0; cfg.mixup = 0.0; cfg.copy_paste = 0.0   # 1 real image per sample -> clean supervision
+    if a.no_augment:
+        cfg.mosaic = 0.0; cfg.mixup = 0.0; cfg.copy_paste = 0.0   # clean 1-image supervision
+    else:
+        # keep ultralytics defaults (mosaic, scale, translate, fliplr, hsv) for variety; the density
+        # target is rebuilt from the augmented boxes each step, so supervision stays consistent.
+        cfg.mixup = a.mixup; cfg.copy_paste = 0.0
+    LOGGER.info(f"[step1] augment={'off' if a.no_augment else f'on (mosaic={cfg.mosaic}, scale={cfg.scale}, mixup={cfg.mixup})'}")
     data = check_det_dataset(a.data)
     stride = 640 // 20 * (a.imgsz // 640) if a.level == 2 else (16 if a.level == 1 else 8)
     train_loader = make_loader(cfg, data, "train", a.batch, a.workers, 32)
