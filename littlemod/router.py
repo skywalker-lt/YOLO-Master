@@ -11,28 +11,28 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from ultralytics.nn.modules.conv import Conv, DWConv
-
 
 class DensityRouter(nn.Module):
-    """1x1 (C->C/r) -> 3x3 mix -> DW 3x3 -> 1x1 (->1). Emits raw density logits [B,1,gh,gw].
+    """GroupNorm conv head -> raw density logits [B,1,gh,gw].
 
-    The plan's minimal 1x1->DW->1x1 is too weak on narrow neck features (C=74 on EsMoE-N -> a ~1.6k
-    router that overfits only ~0.83 on P4). Adding one 3x3 mixing conv at C/2 lifts the overfit ceiling
-    to ~0.95 (near the 1.0 oracle) at ~16k params / <0.1 GFLOPs @ 40x40. Sigmoid applied by the caller
-    (loss consumes logits; top-k is monotonic under sigmoid).
+    NOT ultralytics `Conv` (which carries BatchNorm): on a small router over a frozen detector's
+    features, BN's batch statistics diverge from its running stats, giving a large train/eval gap
+    (train R@0.2=0.95 but eval=0.34) -> the val-recall oscillation. GroupNorm behaves identically in
+    train and eval, killing the gap. Three 3x3 convs give the receptive field to aggregate
+    small-object evidence into a per-cell density. Sigmoid applied by the caller.
     """
 
-    def __init__(self, c_in: int, reduction: int = 2):
+    def __init__(self, c_in: int, c: int = 64, groups: int = 8, layers: int = 3):
         super().__init__()
-        c = max(16, c_in // reduction)
-        self.stem = Conv(c_in, c, 1)            # 1x1 reduce (ultralytics Conv = conv+bn+act)
-        self.mix = Conv(c, c, 3)                # 3x3 channel-mix + receptive field
-        self.dw = DWConv(c, c, 3)               # depthwise 3x3
-        self.head = nn.Conv2d(c, 1, 1)          # raw logit
+        c = max(groups, (c // groups) * groups)
+        blocks = [nn.Conv2d(c_in, c, 3, 1, 1), nn.GroupNorm(groups, c), nn.SiLU()]
+        for _ in range(layers - 1):
+            blocks += [nn.Conv2d(c, c, 3, 1, 1), nn.GroupNorm(groups, c), nn.SiLU()]
+        blocks += [nn.Conv2d(c, 1, 1)]
+        self.net = nn.Sequential(*blocks)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.head(self.dw(self.mix(self.stem(x))))
+        return self.net(x)
 
     @staticmethod
     def select_topk(s: torch.Tensor, k: int) -> torch.Tensor:
