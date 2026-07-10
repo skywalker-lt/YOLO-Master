@@ -95,7 +95,8 @@ def main():
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--lr", type=float, default=1e-3)
-    ap.add_argument("--reduction", type=int, default=4)
+    ap.add_argument("--router-c", type=int, default=64, help="router channel width")
+    ap.add_argument("--router-layers", type=int, default=3, help="router 3x3 conv layers")
     ap.add_argument("--small-thresh", type=float, default=64.0)
     ap.add_argument("--lambda-dice", type=float, default=1.0)
     ap.add_argument("--out", default="runs/littlemod/step1")
@@ -144,7 +145,7 @@ def main():
     LOGGER.info("[step1] ORACLE ceiling (S=D): " + " ".join(f"R@{r}={ceil[r]:.3f}" for r in RHOS)
                 + "  <- the trained router can't exceed this; if R@0.2 < ~0.97 fix grid/target, not the router")
 
-    router = DensityRouter(c_in, reduction=a.reduction).to(dev)
+    router = DensityRouter(c_in, c=a.router_c, layers=a.router_layers).to(dev)
     crit = DensityLoss(lambda_dice=a.lambda_dice)
     opt = torch.optim.AdamW(router.parameters(), lr=a.lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.epochs)
