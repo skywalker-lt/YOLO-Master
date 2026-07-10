@@ -22,13 +22,13 @@ class DensityRouter(nn.Module):
     small-object evidence into a per-cell density. Sigmoid applied by the caller.
     """
 
-    def __init__(self, c_in: int, c: int = 64, groups: int = 8, layers: int = 3):
+    def __init__(self, c_in: int, c: int = 64, groups: int = 8, layers: int = 3, dropout: float = 0.0):
         super().__init__()
         c = max(groups, (c // groups) * groups)
         blocks = [nn.Conv2d(c_in, c, 3, 1, 1), nn.GroupNorm(groups, c), nn.SiLU()]
         for _ in range(layers - 1):
             blocks += [nn.Conv2d(c, c, 3, 1, 1), nn.GroupNorm(groups, c), nn.SiLU()]
-        blocks += [nn.Conv2d(c, 1, 1)]
+        blocks += [nn.Dropout2d(dropout), nn.Conv2d(c, 1, 1)]
         self.net = nn.Sequential(*blocks)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -54,7 +54,7 @@ class MultiLevelDensityRouter(nn.Module):
     """
 
     def __init__(self, c_p3: int, c_p4: int, c: int = 64, groups: int = 8, layers: int = 3,
-                 c_p3_out: int = 32):
+                 c_p3_out: int = 32, dropout: float = 0.0):
         super().__init__()
         c = max(groups, (c // groups) * groups)
         c_p3_out = max(groups, (c_p3_out // groups) * groups)
@@ -62,7 +62,7 @@ class MultiLevelDensityRouter(nn.Module):
         blocks = [nn.Conv2d(c_p3_out + c_p4, c, 3, 1, 1), nn.GroupNorm(groups, c), nn.SiLU()]
         for _ in range(layers - 1):
             blocks += [nn.Conv2d(c, c, 3, 1, 1), nn.GroupNorm(groups, c), nn.SiLU()]
-        blocks += [nn.Conv2d(c, 1, 1)]
+        blocks += [nn.Dropout2d(dropout), nn.Conv2d(c, 1, 1)]
         self.net = nn.Sequential(*blocks)
 
     def forward(self, p3: torch.Tensor, p4: torch.Tensor) -> torch.Tensor:

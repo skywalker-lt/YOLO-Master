@@ -99,6 +99,8 @@ def main():
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--wd", type=float, default=1e-4, help="weight decay (raise to fight overfit)")
+    ap.add_argument("--dropout", type=float, default=0.0, help="router Dropout2d before head (0.1-0.2 to fight overfit)")
     ap.add_argument("--no-augment", action="store_true", help="disable mosaic/scale/flip (clean supervision)")
     ap.add_argument("--mixup", type=float, default=0.0, help="mixup prob (extra variety; 0.1-0.15 typical)")
     ap.add_argument("--multi-level", action="store_true", help="fuse P3+P4 features (richer, P3 resolves small objects)")
@@ -163,11 +165,11 @@ def main():
                 + "  <- the trained router can't exceed this; if R@0.2 < ~0.97 fix grid/target, not the router")
 
     if a.multi_level:
-        router = MultiLevelDensityRouter(feats[0].shape[1], feats[1].shape[1], c=a.router_c, layers=a.router_layers).to(dev)
+        router = MultiLevelDensityRouter(feats[0].shape[1], feats[1].shape[1], c=a.router_c, layers=a.router_layers, dropout=a.dropout).to(dev)
     else:
-        router = DensityRouter(grid_feat.shape[1], c=a.router_c, layers=a.router_layers).to(dev)
+        router = DensityRouter(grid_feat.shape[1], c=a.router_c, layers=a.router_layers, dropout=a.dropout).to(dev)
     crit = DensityLoss(lambda_dice=a.lambda_dice)
-    opt = torch.optim.AdamW(router.parameters(), lr=a.lr, weight_decay=1e-4)
+    opt = torch.optim.AdamW(router.parameters(), lr=a.lr, weight_decay=a.wd)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.epochs)
 
     run = None
