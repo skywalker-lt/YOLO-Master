@@ -29,7 +29,7 @@ from ultralytics.utils import DEFAULT_CFG, LOGGER, SETTINGS
 
 from littlemod.density import build_density_target, router_recall_at_rho
 from littlemod.loss import DensityLoss
-from littlemod.router import DensityRouter
+from littlemod.router import DensityRouter, MultiLevelDensityRouter
 
 RHOS = (0.1, 0.2, 0.3)
 
@@ -39,8 +39,8 @@ def make_loader(cfg, data, split, batch, workers, stride):
     return build_dataloader(ds, batch, workers, shuffle=(split == "train"))
 
 
-def neck_feature(model, detect_idx, level, img):
-    """Frozen forward; return the captured neck feature at `level` (0=P3,1=P4,2=P5)."""
+def neck_features(model, detect_idx, img):
+    """Frozen forward; return the captured neck feature list [P3, P4, P5]."""
     cap = {}
     h = model.model[detect_idx].register_forward_pre_hook(lambda m, a: cap.__setitem__("f", a[0]))
     try:
@@ -48,19 +48,23 @@ def neck_feature(model, detect_idx, level, img):
             model(img)
     finally:
         h.remove()
-    return cap["f"][level]
+    return cap["f"]
+
+
+def route(feats, router, level, multi):
+    """Run the router on captured features; grad flows to the router only. Multi = P3(+)P4 fusion."""
+    return router(feats[0], feats[1]) if multi else router(feats[level])
 
 
 @torch.no_grad()
-def eval_recall(model, detect_idx, level, router, loader, dev, imgsz, small_thresh, max_batches=0):
+def eval_recall(model, detect_idx, level, multi, router, loader, dev, imgsz, small_thresh, max_batches=0):
     router.eval()
     cov = {r: 0.0 for r in RHOS}; tot = {r: 0 for r in RHOS}
     for bi, batch in enumerate(loader):
         if max_batches and bi >= max_batches:
             break
         img = batch["img"].to(dev).float() / 255
-        p = neck_feature(model, detect_idx, level, img)
-        s = router(p)
+        s = route(neck_features(model, detect_idx, img), router, level, multi)
         gh, gw = s.shape[-2:]
         for r in RHOS:
             rec, n = router_recall_at_rho(s, batch["bboxes"].to(dev), batch["batch_idx"].to(dev),
@@ -97,6 +101,7 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--no-augment", action="store_true", help="disable mosaic/scale/flip (clean supervision)")
     ap.add_argument("--mixup", type=float, default=0.0, help="mixup prob (extra variety; 0.1-0.15 typical)")
+    ap.add_argument("--multi-level", action="store_true", help="fuse P3+P4 features (richer, P3 resolves small objects)")
     ap.add_argument("--router-c", type=int, default=64, help="router channel width")
     ap.add_argument("--router-layers", type=int, default=3, help="router 3x3 conv layers")
     ap.add_argument("--small-thresh", type=float, default=64.0)
@@ -142,18 +147,25 @@ def main():
     except Exception as e:
         LOGGER.warning(f"[step1] could not set dense MoE inference ({e})")
 
-    # probe one batch to size the router (channels of the chosen level) + confirm grid
+    # probe one batch to size the router + confirm grid (multi-level outputs on the P4 grid)
     probe = next(iter(train_loader))
-    pf = neck_feature(model, detect_idx, a.level, probe["img"].to(dev).float() / 255)
-    c_in, gh, gw = pf.shape[1], pf.shape[2], pf.shape[3]
+    feats = neck_features(model, detect_idx, probe["img"].to(dev).float() / 255)
+    grid_feat = feats[1] if a.multi_level else feats[a.level]
+    gh, gw = grid_feat.shape[2], grid_feat.shape[3]
     real_stride = a.imgsz // gw
-    LOGGER.info(f"[step1] level={a.level} feature=[{c_in},{gh},{gw}] stride={real_stride} k(20%)={int(0.2*gh*gw)}")
+    if a.multi_level:
+        LOGGER.info(f"[step1] MULTI-LEVEL P3[{feats[0].shape[1]},{feats[0].shape[2]}]+P4[{feats[1].shape[1]},{gh}] -> {gh}x{gw} grid, stride={real_stride}")
+    else:
+        LOGGER.info(f"[step1] level={a.level} feature=[{grid_feat.shape[1]},{gh},{gw}] stride={real_stride} k(20%)={int(0.2*gh*gw)}")
 
     ceil = oracle_ceiling(val_loader, dev, a.imgsz, gh, gw, real_stride, a.small_thresh)
     LOGGER.info("[step1] ORACLE ceiling (S=D): " + " ".join(f"R@{r}={ceil[r]:.3f}" for r in RHOS)
                 + "  <- the trained router can't exceed this; if R@0.2 < ~0.97 fix grid/target, not the router")
 
-    router = DensityRouter(c_in, c=a.router_c, layers=a.router_layers).to(dev)
+    if a.multi_level:
+        router = MultiLevelDensityRouter(feats[0].shape[1], feats[1].shape[1], c=a.router_c, layers=a.router_layers).to(dev)
+    else:
+        router = DensityRouter(grid_feat.shape[1], c=a.router_c, layers=a.router_layers).to(dev)
     crit = DensityLoss(lambda_dice=a.lambda_dice)
     opt = torch.optim.AdamW(router.parameters(), lr=a.lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.epochs)
@@ -173,15 +185,14 @@ def main():
         run_loss = run_qfl = run_dice = 0.0; nb = 0
         for batch in train_loader:
             img = batch["img"].to(dev).float() / 255
-            p = neck_feature(model, detect_idx, a.level, img)         # frozen, no grad
-            s = router(p)                                            # grad flows to router only
+            s = route(neck_features(model, detect_idx, img), router, a.level, a.multi_level)  # grad -> router only
             d = build_density_target(batch["bboxes"].to(dev), batch["batch_idx"].to(dev),
                                      img.shape[0], (gh, gw), a.imgsz, real_stride, a.small_thresh)
             loss, parts = crit(s, d)
             opt.zero_grad(); loss.backward(); opt.step()
             run_loss += float(loss.detach()); run_qfl += parts["qfl"]; run_dice += parts["dice"]; nb += 1
         sched.step()
-        rec = eval_recall(model, detect_idx, a.level, router, val_loader, dev, a.imgsz, a.small_thresh)
+        rec = eval_recall(model, detect_idx, a.level, a.multi_level, router, val_loader, dev, a.imgsz, a.small_thresh)
         row = [ep, run_loss / nb, run_qfl / nb, run_dice / nb] + [rec[r] for r in RHOS]
         with open(csv_path, "a", newline="") as f:
             csv.writer(f).writerow(row)

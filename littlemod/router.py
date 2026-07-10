@@ -43,3 +43,27 @@ class DensityRouter(nn.Module):
         """
         b = s.shape[0]
         return torch.topk(s.reshape(b, -1), k, dim=1).indices
+
+
+class MultiLevelDensityRouter(nn.Module):
+    """Fuse P3 (fine, stride 8) + P4 (stride 16) onto the P4 grid, then a GN head -> density logits.
+
+    P3 resolves small objects better than P4 but is 2x the resolution; it's downsampled (stride-2 conv)
+    to the P4 grid and concatenated with P4, giving the router the fine detail P4 alone lacks. Emits
+    [B,1,gh_p4,gw_p4]. Same static top-k selection as DensityRouter (reuse `DensityRouter.select_topk`).
+    """
+
+    def __init__(self, c_p3: int, c_p4: int, c: int = 64, groups: int = 8, layers: int = 3,
+                 c_p3_out: int = 32):
+        super().__init__()
+        c = max(groups, (c // groups) * groups)
+        c_p3_out = max(groups, (c_p3_out // groups) * groups)
+        self.down = nn.Sequential(nn.Conv2d(c_p3, c_p3_out, 3, 2, 1), nn.GroupNorm(groups, c_p3_out), nn.SiLU())
+        blocks = [nn.Conv2d(c_p3_out + c_p4, c, 3, 1, 1), nn.GroupNorm(groups, c), nn.SiLU()]
+        for _ in range(layers - 1):
+            blocks += [nn.Conv2d(c, c, 3, 1, 1), nn.GroupNorm(groups, c), nn.SiLU()]
+        blocks += [nn.Conv2d(c, 1, 1)]
+        self.net = nn.Sequential(*blocks)
+
+    def forward(self, p3: torch.Tensor, p4: torch.Tensor) -> torch.Tensor:
+        return self.net(torch.cat([self.down(p3), p4], dim=1))
