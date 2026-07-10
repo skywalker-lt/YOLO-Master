@@ -203,9 +203,9 @@ def main():
                      **{f"val/recall@{r}": rec[r] for r in RHOS}})
         if rec[0.2] > best:
             best = rec[0.2]
-            torch.save({"router": router.state_dict(), "level": a.level, "c_in": c_in,
-                        "grid": (gh, gw), "recall@0.2": best, "epoch": ep},
-                       os.path.join(a.out, "router_best.pt"))
+            torch.save({"router": router.state_dict(), "level": a.level, "multi_level": a.multi_level,
+                        "router_c": a.router_c, "router_layers": a.router_layers, "grid": (gh, gw),
+                        "recall@0.2": best, "epoch": ep}, os.path.join(a.out, "router_best.pt"))
     LOGGER.info(f"[step1] done. best Recall@0.2 = {best:.3f}. curve -> {csv_path}")
     if run:
         run.finish()
