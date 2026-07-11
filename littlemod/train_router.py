@@ -39,32 +39,60 @@ def make_loader(cfg, data, split, batch, workers, stride):
     return build_dataloader(ds, batch, workers, shuffle=(split == "train"))
 
 
-def neck_features(model, detect_idx, img):
-    """Frozen forward; return the captured neck feature list [P3, P4, P5]."""
+def neck_features(model, detect_idx, img, feat_layers=None):
+    """Frozen forward; return captured features.
+
+    feat_layers=None  -> the Detect head's INPUT list (post-PAN [P2?,P3,P4,P5]).
+    feat_layers=[i,…] -> the OUTPUTS of those layer indices. Use this for a CAUSAL router that must
+    gate an earlier layer: e.g. [18,15] = N3(stride8)+N4(stride16), both computed before the P2 branch
+    (layer 21), so the router's decision doesn't depend on the layer it gates."""
     cap = {}
-    h = model.model[detect_idx].register_forward_pre_hook(lambda m, a: cap.__setitem__("f", a[0]))
+    hooks = []
+    if feat_layers is None:
+        hooks.append(model.model[detect_idx].register_forward_pre_hook(lambda m, a: cap.__setitem__("f", list(a[0]))))
+    else:
+        for i in feat_layers:
+            hooks.append(model.model[i].register_forward_hook(lambda m, inp, out, i=i: cap.__setitem__(i, out)))
     try:
         with torch.no_grad():
             model(img)
     finally:
-        h.remove()
-    return cap["f"]
+        for h in hooks:
+            h.remove()
+    return cap["f"] if feat_layers is None else [cap[i] for i in feat_layers]
 
 
-def route(feats, router, level, multi):
+def pick_feats(feats, img_h, level, multi):
+    """Select neck features BY STRIDE, not list index.
+    multi + an explicit 2-feature set (--feat-layers) -> (finer, coarser); the router downsamples the
+    finer to the coarser and emits on the coarser grid (e.g. [18,15]->stride16, [15,12]->stride32).
+    multi + the full Detect-input set -> P3(stride8)+P4(stride16), skipping P2(stride4)."""
+    by = {round(img_h / int(f.shape[-2])): f for f in feats}
+    if multi:
+        if len(feats) == 2:
+            s = sorted(feats, key=lambda f: -f.shape[-2])   # finest (largest H) first
+            return s[0], s[1]
+        return by[8], by[16]                       # Detect-input set: P3 (fine) + P4 (router grid)
+    return by[{0: 8, 1: 16, 2: 32}[level]]
+
+
+def route(feats, router, level, multi, img_h):
     """Run the router on captured features; grad flows to the router only. Multi = P3(+)P4 fusion."""
-    return router(feats[0], feats[1]) if multi else router(feats[level])
+    if multi:
+        p3, p4 = pick_feats(feats, img_h, level, True)
+        return router(p3, p4)
+    return router(pick_feats(feats, img_h, level, False))
 
 
 @torch.no_grad()
-def eval_recall(model, detect_idx, level, multi, router, loader, dev, imgsz, small_thresh, max_batches=0):
+def eval_recall(model, detect_idx, level, multi, router, loader, dev, imgsz, small_thresh, max_batches=0, feat_layers=None):
     router.eval()
     cov = {r: 0.0 for r in RHOS}; tot = {r: 0 for r in RHOS}
     for bi, batch in enumerate(loader):
         if max_batches and bi >= max_batches:
             break
         img = batch["img"].to(dev).float() / 255
-        s = route(neck_features(model, detect_idx, img), router, level, multi)
+        s = route(neck_features(model, detect_idx, img, feat_layers), router, level, multi, img.shape[-2])
         gh, gw = s.shape[-2:]
         for r in RHOS:
             rec, n = router_recall_at_rho(s, batch["bboxes"].to(dev), batch["batch_idx"].to(dev),
@@ -104,6 +132,9 @@ def main():
     ap.add_argument("--no-augment", action="store_true", help="disable mosaic/scale/flip (clean supervision)")
     ap.add_argument("--mixup", type=float, default=0.0, help="mixup prob (extra variety; 0.1-0.15 typical)")
     ap.add_argument("--multi-level", action="store_true", help="fuse P3+P4 features (richer, P3 resolves small objects)")
+    ap.add_argument("--feat-layers", type=int, nargs="+", default=None,
+                    help="CAUSAL router: hook these layer OUTPUTS instead of the Detect input. "
+                         "For gating P2 (layer 21) use 18 15 (N3 stride8 + N4 stride16, both pre-P2).")
     ap.add_argument("--router-c", type=int, default=64, help="router channel width")
     ap.add_argument("--router-layers", type=int, default=3, help="router 3x3 conv layers")
     ap.add_argument("--small-thresh", type=float, default=64.0)
@@ -151,23 +182,31 @@ def main():
 
     # probe one batch to size the router + confirm grid (multi-level outputs on the P4 grid)
     probe = next(iter(train_loader))
-    feats = neck_features(model, detect_idx, probe["img"].to(dev).float() / 255)
-    grid_feat = feats[1] if a.multi_level else feats[a.level]
-    gh, gw = grid_feat.shape[2], grid_feat.shape[3]
-    real_stride = a.imgsz // gw
+    pimg = probe["img"].to(dev).float() / 255
+    feats = neck_features(model, detect_idx, pimg, a.feat_layers)
+    if a.feat_layers:
+        LOGGER.info(f"[step1] CAUSAL router: hooking layer outputs {a.feat_layers} (pre-P2 features)")
     if a.multi_level:
-        LOGGER.info(f"[step1] MULTI-LEVEL P3[{feats[0].shape[1]},{feats[0].shape[2]}]+P4[{feats[1].shape[1]},{gh}] -> {gh}x{gw} grid, stride={real_stride}")
+        p3f, p4f = pick_feats(feats, pimg.shape[-2], a.level, True)   # (finer, coarser); grid = coarser
+        gh, gw = p4f.shape[2], p4f.shape[3]
+        real_stride = a.imgsz // gw
+        router_channels = (p3f.shape[1], p4f.shape[1])
+        LOGGER.info(f"[step1] MULTI-LEVEL fine[{p3f.shape[1]},{p3f.shape[2]}]+coarse[{p4f.shape[1]},{gh}] -> {gh}x{gw} grid, stride={real_stride}")
     else:
-        LOGGER.info(f"[step1] level={a.level} feature=[{grid_feat.shape[1]},{gh},{gw}] stride={real_stride} k(20%)={int(0.2*gh*gw)}")
+        gf = pick_feats(feats, pimg.shape[-2], a.level, False)
+        gh, gw = gf.shape[2], gf.shape[3]
+        real_stride = a.imgsz // gw
+        router_channels = (gf.shape[1],)
+        LOGGER.info(f"[step1] level={a.level} feature=[{gf.shape[1]},{gh},{gw}] stride={real_stride} k(20%)={int(0.2*gh*gw)}")
 
     ceil = oracle_ceiling(val_loader, dev, a.imgsz, gh, gw, real_stride, a.small_thresh)
     LOGGER.info("[step1] ORACLE ceiling (S=D): " + " ".join(f"R@{r}={ceil[r]:.3f}" for r in RHOS)
                 + "  <- the trained router can't exceed this; if R@0.2 < ~0.97 fix grid/target, not the router")
 
     if a.multi_level:
-        router = MultiLevelDensityRouter(feats[0].shape[1], feats[1].shape[1], c=a.router_c, layers=a.router_layers, dropout=a.dropout).to(dev)
+        router = MultiLevelDensityRouter(router_channels[0], router_channels[1], c=a.router_c, layers=a.router_layers, dropout=a.dropout).to(dev)
     else:
-        router = DensityRouter(grid_feat.shape[1], c=a.router_c, layers=a.router_layers, dropout=a.dropout).to(dev)
+        router = DensityRouter(router_channels[0], c=a.router_c, layers=a.router_layers, dropout=a.dropout).to(dev)
     crit = DensityLoss(lambda_dice=a.lambda_dice)
     opt = torch.optim.AdamW(router.parameters(), lr=a.lr, weight_decay=a.wd)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.epochs)
@@ -187,14 +226,14 @@ def main():
         run_loss = run_qfl = run_dice = 0.0; nb = 0
         for batch in train_loader:
             img = batch["img"].to(dev).float() / 255
-            s = route(neck_features(model, detect_idx, img), router, a.level, a.multi_level)  # grad -> router only
+            s = route(neck_features(model, detect_idx, img, a.feat_layers), router, a.level, a.multi_level, img.shape[-2])  # grad -> router only
             d = build_density_target(batch["bboxes"].to(dev), batch["batch_idx"].to(dev),
                                      img.shape[0], (gh, gw), a.imgsz, real_stride, a.small_thresh)
             loss, parts = crit(s, d)
             opt.zero_grad(); loss.backward(); opt.step()
             run_loss += float(loss.detach()); run_qfl += parts["qfl"]; run_dice += parts["dice"]; nb += 1
         sched.step()
-        rec = eval_recall(model, detect_idx, a.level, a.multi_level, router, val_loader, dev, a.imgsz, a.small_thresh)
+        rec = eval_recall(model, detect_idx, a.level, a.multi_level, router, val_loader, dev, a.imgsz, a.small_thresh, feat_layers=a.feat_layers)
         row = [ep, run_loss / nb, run_qfl / nb, run_dice / nb] + [rec[r] for r in RHOS]
         with open(csv_path, "a", newline="") as f:
             csv.writer(f).writerow(row)
@@ -207,7 +246,8 @@ def main():
             best = rec[0.2]
             torch.save({"router": router.state_dict(), "level": a.level, "multi_level": a.multi_level,
                         "router_c": a.router_c, "router_layers": a.router_layers, "grid": (gh, gw),
-                        "recall@0.2": best, "epoch": ep}, os.path.join(a.out, "router_best.pt"))
+                        "feat_layers": a.feat_layers, "recall@0.2": best, "epoch": ep},
+                       os.path.join(a.out, "router_best.pt"))
     LOGGER.info(f"[step1] done. best Recall@0.2 = {best:.3f}. curve -> {csv_path}")
     if run:
         run.finish()
