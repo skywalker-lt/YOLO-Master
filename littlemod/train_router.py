@@ -140,8 +140,15 @@ def main():
     ap.add_argument("--small-thresh", type=float, default=64.0)
     ap.add_argument("--lambda-dice", type=float, default=1.0)
     ap.add_argument("--out", default="runs/littlemod/step1")
+    ap.add_argument("--seed", type=int, default=None, help="seed torch/numpy/random for controlled seed reruns")
     ap.add_argument("--wandb", action="store_true")
     a = ap.parse_args()
+
+    if a.seed is not None:                               # controlled seed reruns (data shuffle + augment RNG)
+        import random
+        import numpy as np
+        torch.manual_seed(a.seed); random.seed(a.seed); np.random.seed(a.seed)
+        LOGGER.info(f"[step1] seeded torch/numpy/random with {a.seed}")
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     os.makedirs(a.out, exist_ok=True)
