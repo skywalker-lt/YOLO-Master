@@ -23,6 +23,8 @@ from ultralytics.utils.metrics import ap_per_class, box_iou
 from littlemod.density import build_density_target
 from littlemod.router import DensityRouter, MultiLevelDensityRouter
 
+_SPLIT = "val"                                    # set by main() --split (e.g. "test" for VisDrone test-dev)
+
 
 class MaskedValidator(DetectionValidator):
     """DetectionValidator that masks P2 (stride-4) anchors before NMS. Set attrs after construction:
@@ -47,6 +49,9 @@ class MaskedValidator(DetectionValidator):
     _causal_feats = None        # {layer_idx: output} captured before the P2 layer
     _pred_keep = None           # per-image top-k cell indices, set by the gate hook, consumed by _apply_mask
     _pred_grid = None
+    random_gate = False         # control: keep RANDOM cells (tests denoising-as-regularization vs routing)
+    random_seed = 1234
+    _rgen = None
 
     def preprocess(self, batch):
         batch = super().preprocess(batch)
@@ -143,10 +148,15 @@ class MaskedValidator(DetectionValidator):
         gy, gx = idx // pw, idx % pw
         cell2d = ((gy * gh // ph).clamp(max=gh - 1) * gw + (gx * gw // pw).clamp(max=gw - 1)).view(ph, pw)
         k = max(1, min(round(self.rho * gh * gw), gh * gw))
+        if self.random_gate and self._rgen is None:
+            self._rgen = torch.Generator(device=out.device)
+            self._rgen.manual_seed(self.random_seed)
         out = out.clone()
         keeps = []
         for b in range(B):
-            if s is not None:
+            if self.random_gate:
+                keepcell = torch.randperm(gh * gw, generator=self._rgen, device=out.device)[:k]
+            elif s is not None:
                 keepcell = torch.topk(s[b].reshape(-1), k).indices
             else:
                 m = self._batch["batch_idx"] == b
@@ -240,7 +250,7 @@ def load_router(ckpt_path, device):
 
 
 def run(weights, mode, routing_stride, rho, small_thresh, data, imgsz, batch, workers, router_ckpt=None,
-        gate_feature=False, causal_router_ckpt=None):
+        gate_feature=False, causal_router_ckpt=None, random_gate=False, random_seed=1234, dump_path=None):
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     ym = YOLO(weights)
     try:
@@ -252,7 +262,7 @@ def run(weights, mode, routing_stride, rho, small_thresh, data, imgsz, batch, wo
         pass
     args = get_cfg(DEFAULT_CFG)
     args.data, args.imgsz, args.batch, args.workers = data, imgsz, batch, workers
-    args.conf, args.iou, args.rect, args.split = 0.001, 0.7, True, "val"
+    args.conf, args.iou, args.rect, args.split = 0.001, 0.7, True, _SPLIT
     args.plots, args.verbose, args.save_json = False, False, False
     v = MaskedValidator(args=args)
     v.mask_mode, v.routing_stride, v.rho, v.small_thresh = mode, routing_stride, rho, small_thresh
@@ -270,6 +280,10 @@ def run(weights, mode, routing_stride, rho, small_thresh, data, imgsz, batch, wo
             ym.model.model[i].register_forward_hook(lambda mod, inp, out, i=i: v._causal_feats.__setitem__(i, out))
         gate_feature = True
         LOGGER.info(f"[step2-cal] CAUSAL predicted feature-gating: router on layers {feat_layers} (R@0.2={r02:.3f})")
+    if random_gate:
+        v.random_gate, v.random_seed = True, random_seed
+        gate_feature = True
+        LOGGER.info(f"[step2-cal] RANDOM-gate control: keep random cells (seed={random_seed})")
     if gate_feature:
         v.gate_feature = True
         p2_src = int(ym.model.model[-1].f[0])            # layer feeding the stride-4 (P2) detect
@@ -277,6 +291,11 @@ def run(weights, mode, routing_stride, rho, small_thresh, data, imgsz, batch, wo
         ym.model.model[p2_src].register_forward_hook(v._gate_p2_feature)
         LOGGER.info(f"[step2-cal] P2-feature gating ON at layer {p2_src}")
     m = v(model=ym.model)
+    if dump_path is not None:                            # per-image small-GT stats for the paired bootstrap
+        import pickle
+        with open(dump_path, "wb") as f:
+            pickle.dump(v._small, f)
+        LOGGER.info(f"[step2-cal] dumped per-image small-AP stats ({len(v._small['tp'])} imgs) -> {dump_path}")
     return (float(m["metrics/mAP50(B)"]), float(m["metrics/mAP50-95(B)"]),
             float(m["metrics/mAP50(S)"]), float(m["metrics/mAP50-95(S)"]))
 
@@ -297,11 +316,23 @@ def main():
                     help="entanglement probe: also zero the P2 FEATURE (Design B, PAN starved) and report vs detect-only")
     ap.add_argument("--causal-router", default=None,
                     help="B2: causal router ckpt (feat_layers set) — predicted feature-gating vs dense")
+    ap.add_argument("--random-gate", action="store_true",
+                    help="control: keep RANDOM cells (regularization hypothesis) alongside the router sweep")
+    ap.add_argument("--random-seeds", type=int, nargs="+", default=[1234],
+                    help="seeds for the random-gate control (variance over the randomness)")
+    ap.add_argument("--dump-dir", default=None,
+                    help="dump per-image small-AP stats (dense + causal-gated per rho) here for the paired bootstrap")
     ap.add_argument("--small-thresh", type=float, default=64.0)
+    ap.add_argument("--split", default="val", help="val (default) or test (VisDrone test-dev, 1610 imgs)")
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--workers", type=int, default=8)
     a = ap.parse_args()
+    global _SPLIT
+    _SPLIT = a.split
     SETTINGS["datasets_dir"] = a.datasets_dir
+    if a.dump_dir:
+        import os
+        os.makedirs(a.dump_dir, exist_ok=True)
 
     LOGGER.info("[step2-cal] official-validator eval (DetMetrics, rect=True)")
     # base + dense are rho-independent -> compute once, sweep sparse only.
@@ -341,11 +372,27 @@ def main():
         LOGGER.info("  --- B2: CAUSAL predicted feature-gating (router gates P2 feature+detect) vs dense ---")
         LOGGER.info(f"        dense P2 small mAP50={ds50:.4f} mAP50-95={ds:.4f} (target to match/beat)")
         for rho in a.rho:
+            dump = f"{a.dump_dir}/causal_rho{rho}.pkl" if a.dump_dir else None
             _, _, c50, c95 = run(a.weights, "sparse", a.routing_stride, rho, a.small_thresh, a.data, a.imgsz,
-                                 a.batch, a.workers, causal_router_ckpt=a.causal_router)
+                                 a.batch, a.workers, causal_router_ckpt=a.causal_router, dump_path=dump)
             LOGGER.info(f"  rho={rho:<4}: causal-gated small mAP50={c50:.4f} (retains {ret(c50, bs50, gs5)}, "
                         f"{c50 - ds50:+.4f} vs dense) | small mAP50-95={c95:.4f} (retains {ret(c95, bs, gs)}, "
                         f"{c95 - ds:+.4f} vs dense)")
+
+    if a.random_gate:
+        LOGGER.info("  --- CONTROL: RANDOM feature-gating (regularization vs routing hypothesis) vs dense ---")
+        LOGGER.info("        routing hypothesis: random should COLLAPSE; regularization: random should also help")
+        for rho in a.rho:
+            for seed in a.random_seeds:
+                _, _, r50, r95 = run(a.weights, "sparse", a.routing_stride, rho, a.small_thresh, a.data, a.imgsz,
+                                     a.batch, a.workers, random_gate=True, random_seed=seed)
+                LOGGER.info(f"  rho={rho:<4} seed={seed}: random-gated small mAP50={r50:.4f} "
+                            f"({r50 - ds50:+.4f} vs dense, {r50 - bs50:+.4f} vs baseline)")
+
+    if a.dump_dir:                                        # dense dump for the paired bootstrap (baseline of Δ)
+        run(a.weights, "dense", a.routing_stride, a.rho[0], a.small_thresh, a.data, a.imgsz, a.batch, a.workers,
+            dump_path=f"{a.dump_dir}/dense.pkl")
+        LOGGER.info(f"  [bootstrap] stats dumped to {a.dump_dir}/ — run: python -m littlemod.bootstrap_ci {a.dump_dir}")
 
 
 if __name__ == "__main__":
