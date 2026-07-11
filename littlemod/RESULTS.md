@@ -114,6 +114,29 @@ CONCLUSION: the latency win is not "unimplemented" — it is structurally imposs
 TRT export is moot (slower). **The deliverable is the ACCURACY/denoising result** (sparse routing beats
 dense P2); B3 stands as a bit-exact FLOP reduction with a definitive negative latency result.
 
+## Verification of "sparse beats dense" (the +0.007 could be noise/artifact — 4 checks)
+
+The denoising claim (causal-gated rho=0.3 > dense) is small; tested it four ways. ALL confirm:
+
+| test | result | verdict |
+|---|---|---|
+| **A. paired bootstrap** (2000 resamples of the 548 val imgs, 0 GPU) | Δ=+0.0067, 95% CI [+0.0042,+0.0091], P(Δ≤0)=0 | significant — not sampling noise |
+| **B. random-gate control** (keep RANDOM cells, 3 seeds) | small50 = 0.127±0.002 (dense 0.3475, base 0.3144) | routing, NOT regularization — random COLLAPSES below baseline |
+| **C. router seed reruns** (4 routers) | Δ small50 = +0.0055±0.001, range [+0.0045,+0.0069], all positive | seed-stable, not luck |
+| **D. VisDrone test-dev** (1610 imgs, indep split) | dense 0.2743 -> causal 0.2801, Δ=+0.0057 | replicates on a 2nd set |
+
+**B is the mechanism:** random feature-gating drops to 0.127 — far BELOW the no-P2 baseline (0.314) —
+because the PAN is co-adapted to a *coherent* dense P2; feeding it randomly-zeroed P2 poisons the whole
+detector via the entanglement. So the entanglement is a double-edged sword: targeted routing exploits it
+(denoise empty cells), random routing is destroyed by it. The gain is specifically from TARGETED gating.
+
+**Honest bounds (so it isn't oversold):**
+1. SMALL — +0.005–0.007 small-mAP50. Robust and significant, but modest.
+2. NOT FREE — the win is at rho=0.3, which has NO FLOP saving (B3). It's "slightly more accurate than
+   dense at EQUAL compute," not cheaper. FLOP-saving points (rho<=0.2) are at parity/below dense.
+3. VISDRONE-ONLY — two VisDrone splits != two domains. Aerial, ~94% small objects (where P2's
+   empty-region noise is largest). Generalization to COCO-style data is untested.
+
 ## Findings
 
 1. **The gain is highly concentrated.** 90% of P2's small-object gain lives in the top-20% density
