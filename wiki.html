@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wiki — YOLO-Master</title>
+  <meta name="description" content="In-depth analysis of Mixture-of-Experts (MoE) modules in YOLO-Master.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="./assets/css/style.css">
+</head>
+<body>
+
+  <!-- Top App Bar -->
+  <header class="app-bar" role="banner">
+    <div class="app-bar-inner">
+      <a href="./index.html" class="app-bar-brand">
+        <span class="app-bar-brand-icon"><i class="fas fa-bolt"></i></span>
+        YOLO-Master
+      </a>
+      <nav class="app-bar-links" aria-label="Main navigation">
+        <a href="./index.html"><i class="fas fa-home"></i> Home</a>
+        <a href="./wiki.html" class="active"><i class="fas fa-book"></i> Wiki</a>
+        <a href="./docs.html"><i class="fas fa-file-lines"></i> Docs</a>
+        <a href="./model-zoo.html"><i class="fas fa-cubes"></i> Model Zoo</a>
+        <a href="./demo.html"><i class="fas fa-play"></i> Demo</a>
+      </nav>
+      <div class="app-bar-search">
+        <i class="fas fa-search"></i> Search
+      </div>
+      <div class="app-bar-meta">
+        <a href="https://github.com/Tencent/YOLO-Master" target="_blank" rel="noopener noreferrer">
+          <i class="fab fa-github"></i>
+          <img src="https://img.shields.io/github/stars/Tencent/YOLO-Master?style=flat-square&logo=github&logoColor=white&color=3f51b5&label=" alt="GitHub Stars" class="meta-badge">
+        </a>
+        <span><i class="fas fa-tag"></i> v26.02</span>
+      </div>
+      <button class="app-bar-toggle" aria-label="Toggle menu"><i class="fas fa-bars"></i></button>
+    </div>
+  </header>
+
+  <!-- Three-column Layout -->
+  <div class="doc-layout">
+
+    <!-- Left Sidebar -->
+    <aside class="doc-sidebar">
+      <ul class="doc-sidebar-nav">
+        <li><a href="#overview" class="active">Overview</a></li>
+
+        <li class="nav-section">Core MoE Modules</li>
+        <li><a href="#es-moe">ES_MOE</a></li>
+        <li><a href="#optimized-moe">OptimizedMOE</a></li>
+        <li><a href="#optimized-moe-improved">OptimizedMOEImproved</a></li>
+        <li><a href="#ultra-optimized-moe">UltraOptimizedMoE</a></li>
+
+        <li class="nav-section">Comparisons</li>
+        <li><a href="#router-comparison">Router Comparison</a></li>
+        <li><a href="#expert-comparison">Expert Comparison</a></li>
+
+        <li class="nav-section">Evolution</li>
+        <li><a href="#evolution-timeline">Evolution Timeline</a></li>
+
+        <li class="nav-section">Deployment</li>
+        <li><a href="#hardware-deployment">Hardware Deployment</a></li>
+        <li><a href="#nvidia-gpu">NVIDIA GPU</a></li>
+        <li><a href="#cpu">CPU</a></li>
+        <li><a href="#mobile-edge">Mobile &amp; Edge</a></li>
+        <li><a href="#export-tips">Export Tips</a></li>
+
+        <li class="nav-section">Reference</li>
+        <li><a href="#configuration-faq">Configuration &amp; FAQ</a></li>
+      </ul>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="doc-content">
+
+      <h1>YOLO-Master MoE Modules: Deep Dive &amp; Evolution</h1>
+      <p>This document provides an in-depth analysis of the Mixture-of-Experts (MoE) modules in <code class="code-inline">ultralytics/nn/modules/moe.py</code>.</p>
+
+      <h2 id="overview">Core MoE Modules Overview</h2>
+
+      <h3 id="es-moe">ES_MOE (Early Stage / Efficient Sparse MoE)</h3>
+      <p>The earliest MoE implementation, primarily for proof of concept.</p>
+      <p><strong>Features</strong>:</p>
+      <ul>
+        <li><strong>Heterogeneous Experts</strong>: Different kernel sizes (3×3, 5×5, 7×7) as experts</li>
+        <li><strong>Basic Routing</strong>: <code class="code-inline">DynamicRoutingLayer</code> based on global average pooling</li>
+        <li><strong>Training Mode</strong>: Dense Forward (computes all experts and weights them)</li>
+        <li><strong>No Shared Expert</strong>: Lacks shared path, training unstable early on</li>
+      </ul>
+      <p><strong>Pros</strong>: Intuitive structure<br>
+      <strong>Cons</strong>: Slow training, high memory, prone to routing collapse</p>
+
+      <h3 id="optimized-moe">OptimizedMOE</h3>
+      <p>First major improvement over ES_MOE.</p>
+      <p><strong>Features</strong>:</p>
+      <ul>
+        <li><strong>Shared Expert</strong>: Always-active parallel branch — modern MoE standard</li>
+        <li><strong>Efficient Spatial Routing</strong>: <code class="code-inline">EfficientSpatialRouter</code> with pre-pooling</li>
+        <li><strong>Homogeneous Experts</strong>: Same <code class="code-inline">SimpleExpert</code> for parallel optimization</li>
+      </ul>
+      <p><strong>Pros</strong>: More stable, higher efficiency<br>
+      <strong>Cons</strong>: Low configurability</p>
+
+      <h3 id="optimized-moe-improved">OptimizedMOEImproved (ModularRouterExpertMoE)</h3>
+      <p><strong>Currently Recommended Version</strong>. Highly modular, industrial-grade.</p>
+      <p><strong>Features</strong>:</p>
+      <ul>
+        <li><strong>Highly Modular</strong>: Pluggable Router (Efficient/Local/Adaptive) and Expert (Simple/Ghost/Inverted)</li>
+        <li><strong>Z-Loss</strong>: Prevents router logit explosion</li>
+        <li><strong>Standardized Aux Loss</strong>: Load Balancing + Z-Loss</li>
+        <li><strong>Init Strategy</strong>: Gaussian std=0.01 prevents "winner-takes-all"</li>
+      </ul>
+      <p><strong>Pros</strong>: High flexibility, good stability, production-ready<br>
+      <strong>Cons</strong>: Inference speed can be improved</p>
+
+      <h3 id="ultra-optimized-moe">UltraOptimizedMoE</h3>
+      <p><strong>Designed for high-performance deployment</strong>.</p>
+      <p><strong>Features</strong>:</p>
+      <ul>
+        <li><strong>UltraEfficientRouter</strong>: Depthwise Separable Conv + aggressive downsampling (8×/16×), routing FLOPs ↓ ~95%</li>
+        <li><strong>Batched Expert Computation</strong>: Eliminates Python <code class="code-inline">for</code> loops, inference 3-5× faster</li>
+        <li><strong>GroupNorm</strong>: Replaces BatchNorm, stable for micro-batch</li>
+        <li><strong>Conditional Computation</strong>: Weight threshold skips low-contribution experts</li>
+      </ul>
+      <p><strong>Pros</strong>: Extremely fast, lowest FLOPs, minimal memory<br>
+      <strong>Cons</strong>: Highest complexity</p>
+
+      <h2 id="router-comparison">Router Modules Comparison</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Module</th>
+              <th>Features</th>
+              <th>Scenario</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>DynamicRoutingLayer</td>
+              <td>Basic, Soft/Hard Top-K</td>
+              <td>ES_MOE only, not recommended</td>
+            </tr>
+            <tr>
+              <td>EfficientSpatialRouter</td>
+              <td>Downsample then route</td>
+              <td>General, balance accuracy/speed</td>
+            </tr>
+            <tr>
+              <td>LocalRoutingLayer</td>
+              <td>Small downsampling ratio</td>
+              <td>Small object detection</td>
+            </tr>
+            <tr>
+              <td>AdaptiveRoutingLayer</td>
+              <td>Adaptive pool to 1×1</td>
+              <td>Extreme resource constraints</td>
+            </tr>
+            <tr>
+              <td>UltraEfficientRouter</td>
+              <td>DSConv + aggressive downsample</td>
+              <td>Edge device, extreme speed</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 id="expert-comparison">Expert Modules Comparison</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Module</th>
+              <th>Structure</th>
+              <th>Pros</th>
+              <th>Cons</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>SimpleExpert</td>
+              <td>Conv-BN-SiLU-Conv-BN</td>
+              <td>Standard, easy to optimize</td>
+              <td>Standard params</td>
+            </tr>
+            <tr>
+              <td>GhostExpert</td>
+              <td>GhostNet-style cheap ops</td>
+              <td>Params &amp; FLOPs halved</td>
+              <td>Slightly weaker features</td>
+            </tr>
+            <tr>
+              <td>InvertedResidualExpert</td>
+              <td>MobileNetV2 inverted residual</td>
+              <td>Mobile-friendly</td>
+              <td>Deeper, more latency</td>
+            </tr>
+            <tr>
+              <td>OptimizedSimpleExpert</td>
+              <td>GroupNorm instead of BN</td>
+              <td>Small-batch stable</td>
+              <td>Cannot fuse into Conv</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 id="evolution-timeline">Technical Evolution</h2>
+      <ol>
+        <li><strong>Heterogeneous → Homogeneous</strong>: Better hardware parallelism</li>
+        <li><strong>Stability First</strong>: Shared Expert solves training instability</li>
+        <li><strong>Compute Efficiency</strong>: Dense Forward → Sparse Forward → Batch Parallelism</li>
+        <li><strong>Numerical Stability</strong>: Z-Loss + specific initialization</li>
+      </ol>
+
+      <h2 id="hardware-deployment">Hardware Deployment</h2>
+
+      <h3 id="nvidia-gpu">NVIDIA GPU (Server/Desktop)</h3>
+      <ul>
+        <li><strong>Recommended</strong>: <code class="code-inline">UltraOptimizedMoE</code></li>
+        <li>Batched Computation aggregates samples per expert, launches CUDA kernels at once</li>
+        <li>TensorRT 8.x+ supports TopK/Gather/Scatter well</li>
+        <li>Export: <code class="code-inline">opset_version=13+</code></li>
+      </ul>
+
+      <h3 id="cpu">CPU (Intel/AMD)</h3>
+      <ul>
+        <li>Ideal for MoE — strong branch prediction</li>
+        <li>Sparse means skipping 50% FLOPs</li>
+        <li>Use OpenVINO or ONNX Runtime with <code class="code-inline">use_sparse_inference=True</code></li>
+      </ul>
+
+      <h3 id="mobile-edge">Mobile &amp; Edge (NPU/DSP)</h3>
+      <ul>
+        <li><strong>Challenge</strong>: Dynamic control flow weak on NPU</li>
+        <li><strong>Solution A</strong>: GhostExpert halves memory bandwidth</li>
+        <li><strong>Solution B</strong>: Static export — set top_k = num_experts</li>
+        <li><strong>Solution C</strong>: Shared Expert Only for ultra-low power</li>
+      </ul>
+
+      <h3 id="export-tips">Export Tips</h3>
+      <ol>
+        <li><code class="code-inline">opset_version=13</code> or higher</li>
+        <li>Fix Batch Size for best performance</li>
+        <li>Verify <code class="code-inline">atol=1e-4</code> after export</li>
+      </ol>
+
+      <h2 id="configuration-faq">Configuration &amp; FAQ</h2>
+
+      <p><strong>YAML Example</strong>:</p>
+      <div class="code-block">
+        <div class="code-header">
+          <span class="code-lang">YAML</span>
+          <button class="code-copy" onclick="navigator.clipboard.writeText(this.parentElement.nextElementSibling.textContent)">Copy</button>
+        </div>
+        <pre><code># Standard (recommended)
+- [-1, 1, ModularRouterExpertMoE, [512, 4, 2]]
+# Speed oriented (Ghost)
+- [-1, 1, UltraOptimizedMoE, [512, 4, 2, 'ghost']]
+# Extreme precision (8 experts)
+- [-1, 1, ModularRouterExpertMoE, [512, 8, 2]]</code></pre>
+      </div>
+
+      <div class="info-box info">
+        <span class="icon"><i class="fas fa-lightbulb"></i></span>
+        <p><strong>Q1: Loss oscillation or NaN early?</strong><br>
+        → Use <code class="code-inline">OptimizedMOEImproved</code>+ with Shared Expert &amp; Z-Loss. Lower LR or increase warmup.</p>
+      </div>
+
+      <div class="info-box info">
+        <span class="icon"><i class="fas fa-lightbulb"></i></span>
+        <p><strong>Q2: ONNX export "Gather/Scatter not supported"?</strong><br>
+        → Set <code class="code-inline">opset_version=13+</code>. For old engines, use static export.</p>
+      </div>
+
+      <div class="info-box info">
+        <span class="icon"><i class="fas fa-lightbulb"></i></span>
+        <p><strong>Q3: Higher VRAM than normal YOLO?</strong><br>
+        → Parameters increase with N experts. Reduce <code class="code-inline">num_experts</code> or use GhostExpert. Use AMP.</p>
+      </div>
+
+    </main>
+
+    <!-- Right TOC -->
+    <aside class="doc-toc">
+      <div class="doc-toc-title">On this page</div>
+      <ul>
+        <li><a href="#overview" class="level-2">Core MoE Modules Overview</a></li>
+        <li><a href="#es-moe" class="level-3">ES_MOE</a></li>
+        <li><a href="#optimized-moe" class="level-3">OptimizedMOE</a></li>
+        <li><a href="#optimized-moe-improved" class="level-3">OptimizedMOEImproved</a></li>
+        <li><a href="#ultra-optimized-moe" class="level-3">UltraOptimizedMoE</a></li>
+        <li><a href="#router-comparison" class="level-2">Router Modules Comparison</a></li>
+        <li><a href="#expert-comparison" class="level-2">Expert Modules Comparison</a></li>
+        <li><a href="#evolution-timeline" class="level-2">Technical Evolution</a></li>
+        <li><a href="#hardware-deployment" class="level-2">Hardware Deployment</a></li>
+        <li><a href="#nvidia-gpu" class="level-3">NVIDIA GPU</a></li>
+        <li><a href="#cpu" class="level-3">CPU</a></li>
+        <li><a href="#mobile-edge" class="level-3">Mobile &amp; Edge</a></li>
+        <li><a href="#export-tips" class="level-3">Export Tips</a></li>
+        <li><a href="#configuration-faq" class="level-2">Configuration &amp; FAQ</a></li>
+      </ul>
+    </aside>
+
+  </div>
+
+  <!-- Footer -->
+  <footer class="footer" role="contentinfo">
+    <div class="footer-inner">
+      <div class="footer-grid">
+        <div>
+          <div class="footer-brand"><i class="fas fa-bolt"></i> YOLO-Master</div>
+          <p class="footer-desc">MoE-Accelerated Real-time Detection Framework</p>
+        </div>
+        <div>
+          <div class="footer-heading">Project</div>
+          <ul class="footer-links">
+            <li><a href="./index.html">Home</a></li>
+            <li><a href="./wiki.html">Wiki</a></li>
+            <li><a href="./docs.html">Docs</a></li>
+            <li><a href="./model-zoo.html">Model Zoo</a></li>
+            <li><a href="./demo.html">Demo</a></li>
+          </ul>
+        </div>
+        <div>
+          <div class="footer-heading">Resources</div>
+          <ul class="footer-links">
+            <li><a href="https://github.com/Tencent/YOLO-Master" target="_blank" rel="noopener noreferrer">GitHub</a></li>
+            <li><a href="https://arxiv.org/abs/2512.23273" target="_blank" rel="noopener noreferrer">Paper</a></li>
+            <li><a href="https://huggingface.co/spaces/gatilin/YOLO-Master-WebUI-Demo" target="_blank" rel="noopener noreferrer">HuggingFace</a></li>
+          </ul>
+        </div>
+        <div>
+          <div class="footer-heading">Legal</div>
+          <ul class="footer-links">
+            <li><a href="https://github.com/Tencent/YOLO-Master/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">License</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>© 2025 Tencent Youtu Lab. Released under AGPL-3.0.</span>
+        <span>Made with <i class="fas fa-heart" style="color: #ef4444;"></i></span>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // App bar scroll shadow
+    const appBar = document.querySelector('.app-bar');
+    window.addEventListener('scroll', () => {
+      appBar.classList.toggle('scrolled', window.scrollY > 10);
+    });
+
+    // Sidebar & TOC active link sync on scroll
+    const sections = document.querySelectorAll('.doc-content [id]');
+    const sidebarLinks = document.querySelectorAll('.doc-sidebar-nav a[href^="#"]');
+    const tocLinks = document.querySelectorAll('.doc-toc a[href^="#"]');
+
+    function updateActiveLinks() {
+      let current = '';
+      sections.forEach(section => {
+        const sectionTop = section.getBoundingClientRect().top;
+        if (sectionTop <= 140) current = section.getAttribute('id');
+      });
+
+      sidebarLinks.forEach(link => {
+        link.classList.remove('active');
+        if (link.getAttribute('href') === '#' + current) link.classList.add('active');
+      });
+
+      tocLinks.forEach(link => {
+        link.classList.remove('active');
+        if (link.getAttribute('href') === '#' + current) link.classList.add('active');
+      });
+    }
+
+    window.addEventListener('scroll', updateActiveLinks);
+    updateActiveLinks();
+  </script>
+
+</body>
+</html>

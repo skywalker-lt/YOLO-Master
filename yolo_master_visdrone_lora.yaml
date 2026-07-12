@@ -1,0 +1,13 @@
+# YOLO-Master EsMoE-N LoRA Configuration for VisDrone (航拍密集场景)
+lora_r: 8 # 基础 rank
+lora_alpha: 16
+lora_use_rslora: true
+lora_include_attention: true # 航拍场景包含大量密集小目标，且类目比较丰富，同时注意到数据集较大，适合注意力机制发挥作用，以捕获全局长距离依赖
+lora_gradient_checkpointing: true
+
+# 目标微调模块（包含检测头与注意力层，应对剧烈的尺度变化）
+lora_target_modules: ['conv', 'fused_conv', 'bottleneck.0', 'c2f', 'cv1', 'cv2', 'q', 'k', 'v', 'o']
+
+# [路由层说明]
+# lora_exclude_modules: ['router', 'routing', 'gate']
+# 理由：同上，保持路由层冻结，仅通过适配检测头与主干网络的注意力层来应对剧烈的尺度变化。

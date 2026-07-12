@@ -1,0 +1,16 @@
+# YOLO-Master EsMoE-N LoRA Configuration for Brain-Tumor (医疗稀疏场景)
+lora_r: 8  # 基础 rank，自动化脚本会循环覆盖调整 (4, 8, 16)
+lora_alpha: 16  # 通常设为 2 * r
+lora_use_rslora: true  # 使用 Rank-Stabilized LoRA 稳定收敛
+lora_include_attention: false # 医疗图像目标比较单一、稀疏，识别类别比较统一，但对比发现数据集较小，因此优先调整卷积层，关闭注意力适配以节省显存
+lora_gradient_checkpointing: true # 开启梯度检查点，尽可能提高显存效率
+
+# 目标微调模块（针对卷积与瓶颈层）
+lora_target_modules: ['conv', 'fused_conv', 'bottleneck.0', 'shared_feature.0', 'expert_projections']
+
+# [路由层说明]
+# lora_exclude_modules: ['router', 'routing', 'gate']
+#即明确将 router/routing 排除在 LoRA 之外。
+# 理由如下：
+# EsMoE 的路由层负责离散的专家分发逻辑，对权重变化极度敏感。
+# 将其纳入 LoRA 会导致微调初期路由权重产生剧烈震荡，引发路由坍塌，因此保持其冻结。

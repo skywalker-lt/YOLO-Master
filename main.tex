@@ -1,0 +1,236 @@
+\documentclass[]{template/mac_automl_style}
+\makeatletter
+\def\input@path{{content/}}
+\makeatother
+\graphicspath{{content/}}
+
+\usepackage[toc,page,header]{appendix}
+
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{pifont}
+\usepackage{amssymb}
+\usepackage{amsfonts}
+\usepackage{amsmath}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{colortbl}
+\usepackage{makecell}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{xspace}
+\usepackage{gradient-text}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{diagbox}
+\usepackage{nicefrac}
+\usepackage{wrapfig}
+\usepackage{bbm}
+\usepackage{listings}
+\usepackage{fontawesome5}
+\usepackage{titletoc}
+\usepackage{amsthm}
+\setcounter{topnumber}{5}
+\setcounter{bottomnumber}{3}
+\setcounter{totalnumber}{6}
+\renewcommand{\topfraction}{0.95}
+\renewcommand{\bottomfraction}{0.85}
+\renewcommand{\textfraction}{0.06}
+\renewcommand{\floatpagefraction}{0.82}
+\renewcommand{\dbltopfraction}{0.95}
+\renewcommand{\dblfloatpagefraction}{0.82}
+\setlength{\textfloatsep}{10pt plus 2pt minus 3pt}
+\setlength{\floatsep}{8pt plus 2pt minus 2pt}
+\setlength{\intextsep}{8pt plus 2pt minus 2pt}
+\newcommand{\corremailmark}{\faEnvelope[regular]}
+\newtheorem{definition}{Definition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}{Proposition}
+\algrenewcommand{\algorithmicrequire}{\textbf{Input:}}
+\algrenewcommand{\algorithmicensure}{\textbf{Output:}}
+\algnewcommand{\REQUIRE}{\Require}
+\algnewcommand{\ENSURE}{\Ensure}
+\algnewcommand{\STATE}{\State}
+\algnewcommand{\FOR}{\For}
+\algnewcommand{\ENDFOR}{\EndFor}
+\algnewcommand{\IF}{\If}
+\algnewcommand{\ELSE}{\Else}
+\algnewcommand{\ENDIF}{\EndIf}
+\algnewcommand{\COMMENT}[1]{\Comment{#1}}
+
+\tcbset{
+  aibox/.style={
+    width=\linewidth,
+    top=7pt,
+    bottom=2pt,
+    colback=blue!4!white,
+    colframe=black,
+    colbacktitle=black,
+    enhanced,
+    center,
+    attach boxed title to top left={yshift=-0.1in,xshift=0.15in},
+    boxed title style={boxrule=0pt,colframe=white,},
+  }
+}
+\newtcolorbox{AIbox}[2][]{aibox,title=#2,#1}
+
+% \newcommand{\ours}{\gradientRGB{SpecEyes}{29,78,216}{20,184,166}\xspace}
+% \newcommand{\ours}{\gradientRGB{YOLO-Master-PEFT}{29,78,216}
+\newcommand{\ours}{\gradientRGB{YOLO-PEFT}{29,78,216}{20,184,166}\xspace}
+\newcommand{\system}{\ours}
+\newcommand{\modA}{GraphParser\xspace}
+\newcommand{\modB}{Planner\xspace}
+\newcommand{\modC}{Contract\xspace}
+\newcommand{\modD}{Manifest\xspace}
+\newcommand{\claimA}{\textbf{C1}\xspace}
+\newcommand{\claimB}{\textbf{C2}\xspace}
+\newcommand{\claimC}{\textbf{C3}\xspace}
+\newcommand{\claimD}{\textbf{C4}\xspace}
+
+
+\definecolor{my_green}{RGB}{34, 139, 34}
+\definecolor{my_red}{RGB}{220, 20, 60}
+\definecolor{my_orange}{RGB}{255, 140, 0}
+\definecolor{my_lightgray}{RGB}{245, 245, 245}
+\definecolor{my_darkgray}{RGB}{100, 100, 100}
+\newcommand{\myparagraph}[1]{\par\vspace{2pt}\noindent\textbf{#1}\hspace{1.8ex}}
+\newcommand{\cmark}{\textcolor{my_green}{\ding{51}}}
+\newcommand{\xmark}{\textcolor{my_red}{\ding{55}}}
+\newcommand{\pmark}{\textcolor{my_orange}{\raisebox{0.12ex}{\footnotesize\textasciitilde}}}
+\newcommand{\fb}{\makebox[0.5em][c]{\textbullet}}
+\newcommand{\eb}{\makebox[0.5em][c]{\textopenbullet}}
+\newcommand{\eg}{e.g.,\ }
+\newcommand{\ie}{i.e.,\ }
+\newcommand{\authormark}[1]{\textsuperscript{#1}}
+\newcommand{\yaanname}{Yaan}
+\newcommand{\authorentry}[2]{\mbox{#1\authormark{#2}}}
+\newcommand{\authorsep}{\hspace{0.78em}}
+\newcommand{\socialomnititleword}{%
+  \mbox{%
+    {\sffamily\bfseries\textcolor[HTML]{6A3FD8}{Social}%
+    \textcolor[HTML]{1AA7D8}{Omni}}%
+  }%
+}
+\setleftheadercontent{%
+  \headerlogospace{2.4mm}%
+  % \adjustbox{valign=c}{\raisebox{0.2mm}{\includegraphics[height=16.8mm]{assets/branding/UR.png}}}%
+    % \adjustbox{valign=c}{\raisebox{0.2mm}{\includegraphics[height=20.8mm]
+    % {Arxiv/assets/branding/youtu_logo.png}}}%
+   \adjustbox{valign=c}{\raisebox{0.2mm}{\includegraphics[height=15.2mm]
+    {assets/branding/youtulogo.jpg}}}%
+  \headerlogospace{1.6mm}%
+  \adjustbox{valign=c}{\raisebox{0.15mm}{\includegraphics[height=15.2mm]{assets/branding/xmu.png}}}%
+  % \headerlogospace{1.8mm}%
+  
+  %\adjustbox{valign=c}{\ifXeTeX\omniaffiliationfont\else\sffamily\bfseries\fi\fontsize{9.8}{11.2}\selectfont\color{black!82}Xiamen University}%
+}
+\setrightheadericon{%
+  % \adjustbox{valign=c}{\raisebox{0.8mm}{\includegraphics[height=18.6mm]{assets/branding/automl.png}}}%
+  % \headerlogospace{1.8mm}%
+  % \adjustbox{valign=c}{\raisebox{0.55mm}{\includegraphics[height=14.8mm]{assets/branding/socialomni_logo.png}}}%
+  \adjustbox{valign=c}{\raisebox{0.55mm}{\includegraphics[height=14.8mm]{Arxiv/assets/branding/yolomaster.png}}}%
+}
+
+\setrunningheadericon{%
+  
+}
+\setheadergroupname{}
+
+\emergencystretch=1.5em
+\hbadness=2000
+\special{pdf:minorversion 7}
+\hypersetup{
+  breaklinks=true,
+  colorlinks=true,
+  citecolor=omnilink,
+  linkcolor=omnilink,
+  urlcolor=omnilink
+}
+
+% Title
+% \title{\ours: Accelerating Agentic Multimodal LLMs via Speculative Perception and Planning}
+% \title{\ours: A Unified Parameter-Efficient Fine-Tuning Framework for Heterogeneous Real-Time Detector Architectures}
+
+% \title{\ours: Parameter-Efficient Fine-Tuning on YOLO Family}
+\title{\ours: Parameter-Efficient Fine-Tuning on YOLO Family}
+
+
+\makeatletter
+\def\authorlist{%
+  {
+  \fontsize{12}{14}\selectfont\color{black!96}%
+  \ifXeTeX\omniauthorfont\bfseries\else\sffamily\bfseries\fi
+  \parbox{0.96\linewidth}
+    {\centering
+    \makebox[\linewidth][c]{%
+      % \authorentry{Haoyu Huang}{1,*},\authorsep
+      % \authorentry{Jinfa Huang}{2,*},\authorsep
+      % \authorentry{Zhongwei Wan}{3},\authorsep
+      % \authorentry{Xiawu Zheng}{1}
+      \authorentry{Xu Lin}{1,*},\authorsep
+      \authorentry{WenJie Nie}{2},\authorsep
+      \authorentry{Jinlong Peng}{1},\authorsep
+      \authorentry{Weifu Fu}{1},\authorsep
+      % \authorentry{}{1},\authorsep
+      % \authorentry{Xiawu Zheng}{1}
+      \authorentry{YueXiao Ma}{2},\authorsep
+      \authorentry{Xiawu Zheng}{2}
+      \authorentry{Yong Liu}{1},
+      }%
+    % 【todo】：这部分等写完质量如何，再看要不要再加纪老师他们；以及通信确定
+    % \par\vspace{2.2pt}%
+    % \makebox[\linewidth][c]{%
+    %   \authorentry{Rongrong Ji}{2},\authorsep
+    %   \authorentry{YongJian Wu}{1,\corremailmark}
+    %   }%
+    }%
+  }
+}
+\def\affiliationlist{%
+  {\fontsize{9.9}{11.9}\selectfont\color{black!70}%
+  \ifXeTeX\omnibytesansmedium\else\sffamily\fi
+  \parbox{0.92\linewidth}{\centering
+  \authormark{1}Tencent Youtu Lab
+  \authormark{2}Xiamen University\par
+  % \authormark{3}The Ohio State University
+  \vspace{2.8mm}
+  {\fontsize{9.8}{11.8}\selectfont\color{black!82}%
+  \ifXeTeX\omnibytesansmedium\else\sffamily\fi
+  {  
+  % \textbf{* Equal Contributors} \par
+  }}}}\def\emaillist{%
+  {}}
+\makeatother
+
+
+% % Email
+% % \checkdata[Email]{Jinfa Huang \href{mailto:jhuang90@ur.rochester.edu}{{\ifXeTeX\omnimonofont\else\ttfamily\fi jhuang90@ur.rochester.edu}}, Haoyu Huang \href{mailto:huanghaoyu@stu.xmu.edu.cn}{{\ifXeTeX\omnimonofont\else\ttfamily\fi huanghaoyu@stu.xmu.edu.cn}}}
+
+% % Project Pages
+% % \checkdata[Project Page]{\href{https://github.com/MAC-AutoML/SpecEyes}{\nolinkurl{github.com/MAC-AutoML/SpecEyes}}}
+% \checkdata[Project Page]{\href{https://github.com/Tencent/YOLO-Master}{\nolinkurl{github.com/Tencent/YOLO-Master}}}
+
+
+\begin{document}
+
+\maketitle
+\input{Sec/0_abs}
+\input{Sec/1_intro}
+\input{Sec/5_related_work}
+\input{Sec/2_method}
+\input{Sec/3_exp}
+\input{Sec/4_conclusion}
+\FloatBarrier
+\clearpage
+\input{Sec/6_appendix}
+
+\bibliographystyle{plainnat}
+\bibliography{mac_automl}
+
+% \clearpage
+% \beginappendix
+% \input{sec/append}
+% \input{Sec/X_appenedix}
+
+\end{document}
