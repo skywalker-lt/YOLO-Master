@@ -327,6 +327,7 @@ def train_one(args: argparse.Namespace, dataset: DatasetSpec, spec: ModelSpec, p
         amp=args.amp,
         resume=resume,
         verbose=args.verbose,
+        **({"lr0": args.lr0} if args.lr0 is not None else {}),
     )
     return {"model": spec.name, "status": "resumed" if resume else "ok",
             "duration_s": f"{time.time() - start:.1f}"}
@@ -340,6 +341,9 @@ def build_parser(dataset: DatasetSpec, models=MODELS) -> argparse.ArgumentParser
     p.add_argument("--epochs", type=int, default=300, help="Recommended ~300 (adjust to GPU budget).")
     p.add_argument("--imgsz", type=int, default=640)
     p.add_argument("--batch", type=int, default=64)
+    p.add_argument("--lr0", type=float, default=None,
+                   help="Override initial LR (repo default_cfg=0.01). AdamW (the default optimizer) "
+                        "is unstable at 0.01 and NaNs; use ~1e-3. None keeps the repo default.")
     p.add_argument("--device", default="0")
     p.add_argument("--workers", type=int, default=16)
     p.add_argument("--seed", type=int, default=42)
