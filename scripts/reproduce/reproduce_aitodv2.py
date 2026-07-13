@@ -29,6 +29,9 @@ from _reproduce_common import DatasetSpec, ModelSpec, MODELS, run_dataset  # noq
 # evaluation too (else its sparse-eval mAP collapses like EsMoE-N).
 MODELS_AITOD = MODELS + (
     ModelSpec("EsMoE-P2-N", "ultralytics/cfg/models/master/v0/det/yolo-master-n-p2.yaml", uses_esmoe=True),
+    # v0.1 base (stable OptimizedMOEImproved) + P2/4 head -> tiny-object variant, no ES_MOE
+    # routing collapse. uses_esmoe=False (train==eval consistent; --no-sparse-eval is a no-op).
+    ModelSpec("v0.1-P2-N", "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-p2.yaml", uses_esmoe=False),
 )
 
 DATASET = DatasetSpec(
