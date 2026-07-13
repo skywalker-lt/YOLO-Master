@@ -318,6 +318,8 @@ def train_one(args: argparse.Namespace, dataset: DatasetSpec, spec: ModelSpec, p
         name=run_name,
         exist_ok=True,
         pretrained=False,
+        lora_r=0,  # full from-scratch baseline: repo default.yaml ships lora_r=16, which would
+                   # silently LoRA-fy the run (train ~24% of params). r=0 disables LoRA (apply_lora no-op).
         val=True,
         plots=True,
         cache=args.cache,
