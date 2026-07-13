@@ -330,9 +330,9 @@ def train_one(args: argparse.Namespace, dataset: DatasetSpec, spec: ModelSpec, p
             "duration_s": f"{time.time() - start:.1f}"}
 
 
-def build_parser(dataset: DatasetSpec) -> argparse.ArgumentParser:
+def build_parser(dataset: DatasetSpec, models=MODELS) -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description=f"Reproduce YOLO-Master v0.1-N and EsMoE-N baselines on {dataset.name}.",
+        description=f"Reproduce YOLO-Master {', '.join(m.name for m in models)} baselines on {dataset.name}.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--epochs", type=int, default=300, help="Recommended ~300 (adjust to GPU budget).")
@@ -345,8 +345,8 @@ def build_parser(dataset: DatasetSpec) -> argparse.ArgumentParser:
     p.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--cache", action="store_true")
     p.add_argument("--project", default=dataset.project)
-    p.add_argument("--model", choices=[m.name for m in MODELS] + ["both"], default="both",
-                   help="Which model to train: v0.1-N, EsMoE-N, or both (default).")
+    p.add_argument("--model", choices=[m.name for m in models] + ["both"], default="both",
+                   help=f"Which model to train: {', '.join(m.name for m in models)}, or both (default).")
     p.add_argument("--sparse-eval", action=argparse.BooleanOptionalAction, default=True,
                    help="ES_MOE sparse inference at validation/inference. Default True reproduces "
                         "EsMoE-N as-is (its sparse-eval path collapses mAP). Pass --no-sparse-eval "
@@ -366,11 +366,11 @@ def build_parser(dataset: DatasetSpec) -> argparse.ArgumentParser:
     return p
 
 
-def run_dataset(dataset: DatasetSpec) -> int:
+def run_dataset(dataset: DatasetSpec, models=MODELS) -> int:
     """Entry point used by the per-dataset scripts."""
-    args = build_parser(dataset).parse_args()
+    args = build_parser(dataset, models).parse_args()
     project = Path(args.project) if Path(args.project).is_absolute() else ROOT / args.project
-    specs = list(MODELS) if args.model == "both" else [m for m in MODELS if m.name == args.model]
+    specs = list(models) if args.model == "both" else [m for m in models if m.name == args.model]
 
     wandb_desc = "off" if (not args.wandb or args.wandb_mode == "disabled") else args.wandb_mode
     print(f"[reproduce:{dataset.name}] data={dataset.data}  project={project}  "

@@ -1,0 +1,19 @@
+# AI-TOD-v2 — tiny object detection in aerial images.
+# 8 classes, ~800x800 patches, mean object ~12.7 px (86% <16px). Improved v2 annotations.
+# IMAGES: require xView registration (xviewdataset.org) + the AI-TOD generation pipeline; the drive
+# has only images_wo_xview + complete_annotations. Place generated images under images/{train,val,test}.
+# LABELS: generated from the v2 COCO json by scripts/aitod/coco2yolo_aitod.py (degenerate boxes cleaned).
+path: /data/datasets/AI-TOD-v2
+train: images/train
+val: images/val
+test: images/test
+nc: 8
+names:
+  0: airplane
+  1: bridge
+  2: storage-tank
+  3: ship
+  4: swimming-pool
+  5: vehicle
+  6: person
+  7: wind-mill
