@@ -13,7 +13,9 @@ Size bins follow the AI-TOD evaluator (aitodpycocotools) — object scale = sqrt
     medium    (m)  [32, inf]    -> area [1024,  inf]
 AP/AP50/AP75 are over 'all'. maxDets=1500 (AI-TOD dense-scene convention, vs COCO's 100).
 
-Requires: pycocotools (`pip install pycocotools`), ultralytics.
+Requires: ultralytics + pycocotools. Install `faster-coco-eval` too — it's auto-detected
+and runs the C++ COCOeval (~50x faster, identical numbers), which matters a lot at conf=0.001
+where there are ~1M detections. `pip install faster-coco-eval pycocotools`.
 
 Usage:
     python scripts/reproduce/eval_aitod.py --weights runs/.../best.pt --split test
@@ -75,8 +77,14 @@ def main() -> int:
     import yaml
     from ultralytics import YOLO
     from ultralytics.utils.checks import check_file
-    from pycocotools.coco import COCO
-    from pycocotools.cocoeval import COCOeval
+    # C++ COCOeval (~50x faster, identical numbers) if available, else pure-Python pycocotools.
+    try:
+        from faster_coco_eval import COCO, COCOeval_faster as COCOeval
+        eval_backend = "faster-coco-eval (C++)"
+    except ImportError:
+        from pycocotools.coco import COCO
+        from pycocotools.cocoeval import COCOeval
+        eval_backend = "pycocotools (pure-Python; `pip install faster-coco-eval` for ~50x speedup)"
 
     # ---- resolve dataset paths ----
     data_yaml = check_file(a.data)
@@ -144,6 +152,7 @@ def main() -> int:
         raise RuntimeError("No detections produced; cannot evaluate.")
 
     # ---- COCOeval with AI-TOD area ranges + maxDets ----
+    print(f"[eval] scoring backend: {eval_backend}")
     coco_dt = coco_gt.loadRes(dets)
     ce = COCOeval(coco_gt, coco_dt, iouType="bbox")
     ce.params.maxDets = [a.max_dets_eval]
