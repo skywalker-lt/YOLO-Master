@@ -1,0 +1,7 @@
+# Deps for scripts/reproduce/eval_aitod.py (AI-TOD COCO evaluation).
+# faster-coco-eval is a C++ drop-in for COCOeval — auto-detected by eval_aitod.py.
+# At conf=0.001 there are ~1M detections; pure-Python pycocotools takes ~20 min,
+# faster-coco-eval scores in seconds (identical numbers). Install BOTH on the eval pod:
+#   pip install -r scripts/reproduce/requirements-eval.txt
+pycocotools
+faster-coco-eval
