@@ -56,7 +56,6 @@ def main() -> int:
 
     import torch
     from ultralytics import YOLO
-    from ultralytics.utils.torch_utils import get_flops
 
     dev = torch.device(f"cuda:{a.device}")
     torch.cuda.set_device(dev)
@@ -64,8 +63,18 @@ def main() -> int:
 
     ym = YOLO(a.weights)
     n_params = sum(p.numel() for p in ym.model.parameters()) / 1e6
+    # Deterministic full-res GFLOPs (fixed-seed input). NOT ultralytics get_flops:
+    # it profiles a torch.empty 32x32 -> input-dependent MoE routing makes it
+    # non-reproducible (garbage values fire different experts) once x625'd.
     try:
-        gflops = get_flops(ym.model, imgsz=a.imgsz)
+        import contextlib
+        import io
+        from copy import deepcopy
+        import thop
+        _g = torch.Generator().manual_seed(0)
+        _xf = torch.randn(1, 3, a.imgsz, a.imgsz, generator=_g)
+        with contextlib.redirect_stdout(io.StringIO()), torch.inference_mode():
+            gflops = thop.profile(deepcopy(ym.model).eval(), inputs=[_xf], verbose=False)[0] / 1e9 * 2
     except Exception:  # noqa: BLE001
         gflops = float("nan")
     gpu_name = torch.cuda.get_device_name(dev)

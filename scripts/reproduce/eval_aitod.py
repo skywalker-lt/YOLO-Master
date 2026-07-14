@@ -47,6 +47,49 @@ def _ap(coco_eval, area_idx: int, iou_thr: float | None = None, max_det_idx: int
     return float(np.mean(p)) if p.size else float("nan")
 
 
+def _measure_gflops(model, imgsz: int, img_files=None, n: int = 16, seed: int = 0) -> float:
+    """Deterministic, sparse-MoE-honest GFLOPs at FULL resolution.
+
+    ultralytics' get_flops profiles a `torch.empty` (uninitialised memory) 32x32
+    input and scales by (imgsz/32)^2. For input-dependent MoE (top-k routing +
+    conditional compute) that is both NON-reproducible (garbage values route to a
+    different mix of experts each call -> FLOPs swing by whole GF once x625'd) and
+    inaccurate (routing at 32x32 doesn't represent 800x800). Here we profile at full
+    resolution on real images (mean over n; reproducible since the images are fixed
+    and the model is in eval) -> the honest expected sparse cost. Falls back to a
+    fixed-seed input when images are unavailable.
+    """
+    import torch
+    try:
+        import thop
+    except ImportError:
+        return float("nan")
+    import contextlib
+    import io
+    from copy import deepcopy
+
+    m = deepcopy(model).eval()
+    dev = next(m.parameters()).device
+    x = None
+    if img_files:
+        import cv2
+        xs = []
+        for p in img_files[:n]:
+            im = cv2.imread(str(p))
+            if im is None:
+                continue
+            im = cv2.resize(im, (imgsz, imgsz))[:, :, ::-1]  # BGR->RGB
+            xs.append(torch.from_numpy(np.ascontiguousarray(im)).permute(2, 0, 1).float() / 255.0)
+        if xs:
+            x = torch.stack(xs).to(dev)
+    if x is None:  # fallback: fixed-seed deterministic input
+        g = torch.Generator(device=dev).manual_seed(seed)
+        x = torch.randn(1, 3, imgsz, imgsz, device=dev, generator=g)
+    with contextlib.redirect_stdout(io.StringIO()), torch.inference_mode():
+        flops = thop.profile(m, inputs=[x], verbose=False)[0] / 1e9 * 2
+    return flops / x.shape[0]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="AI-TOD COCO evaluation (size-binned APs).",
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -63,6 +106,7 @@ def main() -> int:
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--half", action="store_true", help="FP16 inference.")
     ap.add_argument("--flops-imgsz", type=int, default=None, help="Imgsz for the GFLOPs figure (default = --imgsz).")
+    ap.add_argument("--flops-imgs", type=int, default=8, help="Real images to average GFLOPs over (sparse-MoE FLOPs are input-dependent; deterministic).")
     ap.add_argument("--out", default=None, help="Also dump the COCO predictions json here.")
     a = ap.parse_args()
 
@@ -105,20 +149,19 @@ def main() -> int:
     print(f"[eval] GT {gt_json.name}: {len(coco_gt.dataset['images'])} imgs, {len(cats)} classes, "
           f"{len(coco_gt.dataset['annotations'])} anns")
 
-    # ---- model + GFLOPs ----
+    # ---- model ----
     model = YOLO(a.weights)
     n_params = sum(p.numel() for p in model.model.parameters())
     flops_sz = a.flops_imgsz or a.imgsz
-    try:
-        from ultralytics.utils.torch_utils import get_flops
-        gflops = get_flops(model.model, imgsz=flops_sz)
-    except Exception as e:  # noqa: BLE001
-        gflops = float("nan")
-        print(f"[eval] GFLOPs unavailable: {e}")
 
     # ---- inference -> COCO detections ----
     exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
     img_files = sorted(p for p in img_dir.iterdir() if p.suffix.lower() in exts)
+
+    # deterministic, sparse-MoE-honest GFLOPs (mean over real images @ full res)
+    gflops = _measure_gflops(model.model, flops_sz, img_files, n=a.flops_imgs)
+    print(f"[eval] GFLOPs={gflops:.2f} @ {flops_sz}px "
+          f"(mean over {min(a.flops_imgs, len(img_files))} real imgs, deterministic full-res)")
     print(f"[eval] running inference on {len(img_files)} images @ imgsz={a.imgsz} conf={a.conf} "
           f"iou={a.iou} max_det={a.max_det} ...")
     dets, missing = [], 0
