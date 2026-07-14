@@ -348,7 +348,10 @@ def build_parser(dataset: DatasetSpec, models=MODELS) -> argparse.ArgumentParser
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--patience", type=int, default=0, help="0 disables early stopping.")
     p.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--cache", action="store_true")
+    p.add_argument("--cache", nargs="?", const="ram", default=False,
+                   help="Cache images: '--cache'/'--cache ram' = RAM, '--cache disk' = on-disk .npy, "
+                        "omit to disable. On network-volume (MFS) pods 'ram' can hang building the val "
+                        "loader; 'disk' avoids that but writes .npy back to the same volume.")
     p.add_argument("--project", default=dataset.project)
     p.add_argument("--model", choices=[m.name for m in models] + ["both"], default="both",
                    help=f"Which model to train: {', '.join(m.name for m in models)}, or both (default).")
