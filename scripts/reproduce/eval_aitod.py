@@ -64,6 +64,14 @@ def main() -> int:
     ap.add_argument("--out", default=None, help="Also dump the COCO predictions json here.")
     a = ap.parse_args()
 
+    # raise the open-file-descriptor soft limit (dense image dirs + dataloader workers)
+    try:
+        import resource
+        _s, _h = resource.getrlimit(resource.RLIMIT_NOFILE)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (min(_h, 65536), _h))
+    except Exception:  # noqa: BLE001
+        pass
+
     import yaml
     from ultralytics import YOLO
     from ultralytics.utils.checks import check_file
@@ -106,7 +114,9 @@ def main() -> int:
     print(f"[eval] running inference on {len(img_files)} images @ imgsz={a.imgsz} conf={a.conf} "
           f"iou={a.iou} max_det={a.max_det} ...")
     dets, missing = [], 0
-    for r in model.predict(source=[str(p) for p in img_files], imgsz=a.imgsz, conf=a.conf, iou=a.iou,
+    # Pass the directory (streamed one file at a time), NOT a list of paths — a big path list
+    # makes ultralytics' autocast_list open every file at once -> "Too many open files".
+    for r in model.predict(source=str(img_dir), imgsz=a.imgsz, conf=a.conf, iou=a.iou,
                            max_det=a.max_det, device=a.device, half=a.half, batch=a.batch,
                            stream=True, verbose=False, save=False):
         img_id = stem2id.get(Path(r.path).stem)
