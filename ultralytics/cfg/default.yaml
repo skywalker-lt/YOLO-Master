@@ -113,6 +113,8 @@ box: 7.5 # (float) box loss gain
 cls: 0.5 # (float) classification loss gain
 dfl: 1.5 # (float) distribution focal loss
 moe: 0.3 # (float) moe loss gain (was 0.15, too low to prevent routing collapse)
+nwd_ratio: 0.0 # (float) blend NWD into TaskAligned label assignment: overlap=(1-r)*CIoU+r*NWD; 0=off, >0 for tiny objects (AI-TOD)
+nwd_const: 12.8 # (float) NWD normalization constant C (~mean object size in px; 12.8 for AI-TOD)
 pose: 12.0 # (float) pose loss gain (pose tasks)
 kobj: 1.0 # (float) keypoint objectness loss gain (pose tasks)
 nbs: 64 # (int) nominal batch size used for loss normalization

@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 from . import LOGGER
-from .metrics import bbox_iou, probiou
+from .metrics import bbox_iou, probiou, wasserstein_nwd
 from .ops import xywhr2xyxyxyxy
 from .torch_utils import TORCH_1_11
 
@@ -23,7 +23,8 @@ class TaskAlignedAssigner(nn.Module):
         eps (float): A small value to prevent division by zero.
     """
 
-    def __init__(self, topk: int = 13, num_classes: int = 80, alpha: float = 1.0, beta: float = 6.0, eps: float = 1e-9):
+    def __init__(self, topk: int = 13, num_classes: int = 80, alpha: float = 1.0, beta: float = 6.0, eps: float = 1e-9,
+                 nwd_ratio: float = 0.0, nwd_const: float = 12.8):
         """Initialize a TaskAlignedAssigner object with customizable hyperparameters.
 
         Args:
@@ -32,6 +33,10 @@ class TaskAlignedAssigner(nn.Module):
             alpha (float, optional): The alpha parameter for the classification component of the task-aligned metric.
             beta (float, optional): The beta parameter for the localization component of the task-aligned metric.
             eps (float, optional): A small value to prevent division by zero.
+            nwd_ratio (float, optional): Blend weight for NWD in the localization metric: overlap =
+                (1-r)*CIoU + r*NWD. 0 = stock IoU assignment; >0 mixes in Normalized Wasserstein Distance
+                for stable tiny-object (e.g. AI-TOD) assignment. See :func:`wasserstein_nwd`.
+            nwd_const (float, optional): NWD normalization constant C (≈ mean object size in px; 12.8 for AI-TOD).
         """
         super().__init__()
         self.topk = topk
@@ -39,6 +44,8 @@ class TaskAlignedAssigner(nn.Module):
         self.alpha = alpha
         self.beta = beta
         self.eps = eps
+        self.nwd_ratio = nwd_ratio
+        self.nwd_const = nwd_const
 
     @torch.no_grad()
     def forward(self, pd_scores, pd_bboxes, anc_points, gt_labels, gt_bboxes, mask_gt):
@@ -199,9 +206,13 @@ class TaskAlignedAssigner(nn.Module):
             pd_bboxes (torch.Tensor): Predicted boxes.
 
         Returns:
-            (torch.Tensor): IoU values between each pair of boxes.
+            (torch.Tensor): Localization metric (CIoU, or CIoU/NWD blend) between each pair of boxes.
         """
-        return bbox_iou(gt_bboxes, pd_bboxes, xywh=False, CIoU=True).squeeze(-1).clamp_(0)
+        ciou = bbox_iou(gt_bboxes, pd_bboxes, xywh=False, CIoU=True).squeeze(-1).clamp_(0)
+        if self.nwd_ratio > 0:  # blend in NWD for stable tiny-object assignment (boxes here are in image px)
+            nwd = wasserstein_nwd(gt_bboxes, pd_bboxes, constant=self.nwd_const, xywh=False).squeeze(-1)
+            return (1.0 - self.nwd_ratio) * ciou + self.nwd_ratio * nwd
+        return ciou
 
     def select_topk_candidates(self, metrics, topk_mask=None):
         """Select the top-k candidates based on the given metrics.

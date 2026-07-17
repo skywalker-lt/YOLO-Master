@@ -342,7 +342,11 @@ class v8DetectionLoss:
 
         self.use_dfl = m.reg_max > 1
 
-        self.assigner = TaskAlignedAssigner(topk=tal_topk, num_classes=self.nc, alpha=0.5, beta=6.0)
+        self.assigner = TaskAlignedAssigner(
+            topk=tal_topk, num_classes=self.nc, alpha=0.5, beta=6.0,
+            nwd_ratio=float(getattr(h, "nwd_ratio", 0.0) or 0.0),   # >0 blends NWD into tiny-object assignment
+            nwd_const=float(getattr(h, "nwd_const", 12.8) or 12.8),
+        )
         self.bbox_loss = BboxLoss(m.reg_max).to(device)
         self.proj = torch.arange(m.reg_max, dtype=torch.float, device=device)
 

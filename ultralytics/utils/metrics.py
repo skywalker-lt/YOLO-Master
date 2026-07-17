@@ -77,6 +77,30 @@ def box_iou(box1: torch.Tensor, box2: torch.Tensor, eps: float = 1e-7) -> torch.
     return inter / ((a2 - a1).prod(2) + (b2 - b1).prod(2) - inter + eps)
 
 
+def wasserstein_nwd(box1: torch.Tensor, box2: torch.Tensor, constant: float = 12.8,
+                    xywh: bool = False, eps: float = 1e-7) -> torch.Tensor:
+    """Normalized Wasserstein Distance (NWD) similarity between paired boxes, in [0, 1].
+
+    Models each box as a 2-D Gaussian N(mu, Sigma), mu=center, Sigma=diag((w/2)^2, (h/2)^2), and returns
+    ``exp(-sqrt(W2^2)/C)`` where ``W2^2 = ||mu1-mu2||^2 + ||Sigma1^0.5 - Sigma2^0.5||_F^2`` (Wang et al.,
+    "A Normalized Gaussian Wasserstein Distance for Tiny Object Detection"). Unlike IoU, NWD stays smooth
+    and non-degenerate for tiny boxes (a 1px shift doesn't collapse it to 0), so it gives stable label
+    assignment for ~12px AI-TOD objects. ``constant`` C must match the box coordinate scale (≈ the mean
+    object size in px; 12.8 for AI-TOD). Boxes must be paired (same shape), xyxy unless ``xywh=True``.
+    Returns shape ``box1.shape[:-1] + (1,)`` to mirror :func:`bbox_iou`.
+    """
+    if xywh:
+        (cx1, cy1, w1, h1), (cx2, cy2, w2, h2) = box1.chunk(4, -1), box2.chunk(4, -1)
+    else:
+        b1x1, b1y1, b1x2, b1y2 = box1.chunk(4, -1)
+        b2x1, b2y1, b2x2, b2y2 = box2.chunk(4, -1)
+        w1, h1, w2, h2 = b1x2 - b1x1, b1y2 - b1y1, b2x2 - b2x1, b2y2 - b2y1
+        cx1, cy1, cx2, cy2 = b1x1 + w1 / 2, b1y1 + h1 / 2, b2x1 + w2 / 2, b2y1 + h2 / 2
+    center = (cx1 - cx2).pow(2) + (cy1 - cy2).pow(2)
+    wh = ((w1 - w2) / 2).pow(2) + ((h1 - h2) / 2).pow(2)   # ||Sigma1^0.5 - Sigma2^0.5||_F^2 (diag)
+    return torch.exp(-(center + wh + eps).sqrt() / constant)
+
+
 def bbox_iou(
     box1: torch.Tensor,
     box2: torch.Tensor,
