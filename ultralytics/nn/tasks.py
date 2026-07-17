@@ -119,6 +119,14 @@ from ultralytics.utils.loss import (
 )
 from ultralytics.utils.ops import make_divisible
 from ultralytics.utils.patches import torch_load
+
+# Experimental littlemod block (MoA-gated UoMoE sparse-P2). Guarded so the library never hard-depends
+# on the experiment dir: if littlemod/ is not importable, MoASparseP2 stays None and parse_model simply
+# won't know the name (configs that don't use it are unaffected).
+try:
+    from littlemod.moa_sparse_p2 import MoASparseP2
+except Exception:  # noqa: BLE001
+    MoASparseP2 = None
 from ultralytics.utils.plotting import feature_visualization
 from ultralytics.utils.torch_utils import (
     fuse_conv_and_bn,
@@ -1748,6 +1756,8 @@ def parse_model(d, ch, verbose=True):
             C2fMoT,
         }
     )
+    if MoASparseP2 is not None:  # experimental littlemod block (arg convention [c1, c2, num_experts, top_k])
+        base_modules = base_modules | {MoASparseP2}
     repeat_modules = frozenset(  # modules with 'repeat' arguments
         {
             BottleneckCSP,
