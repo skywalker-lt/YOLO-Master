@@ -75,10 +75,13 @@ _MIXTURE_LOSS_EMA_KEYS = ("moe", "mot", "moa")
 def _get_mixture_loss_ema(model: nn.Module | None) -> dict[str, float] | None:
     """Return (and lazily init) EMA scales for MoE/MoT/MoA aux-loss magnitudes.
 
-    The EMA state is stored as a **persistent buffer** ``_mixture_loss_ema_buf``
-    (shape [3], float32) on the model so it survives ``state_dict()`` round-trips
-    and is correctly restored on resume.  Previously a plain dict attribute was
-    used, which silently reset to defaults after checkpoint resume.
+    Stored as a **non-persistent** buffer ``_mixture_loss_ema_buf`` (shape [3], float32) on the model.
+    It is registered lazily on the first loss step, so it does NOT exist on a freshly-rebuilt model/EMA
+    at resume time — if it were persistent, the checkpoint would carry the key and ``load_state_dict``
+    (strict) would raise ``Unexpected key(s) ... _mixture_loss_ema_buf`` on the fresh EMA, crashing
+    every resume of a mixture-loss model. Non-persistent keeps it out of the checkpoint entirely; the
+    only cost is the EMA re-warms from defaults after a resume (~100 steps at 0.99 decay — negligible
+    over a full run). Do NOT make this persistent again without eagerly registering it at model build.
     """
     if model is None:
         return None
@@ -89,7 +92,7 @@ def _get_mixture_loss_ema(model: nn.Module | None) -> dict[str, float] | None:
         model.register_buffer(
             "_mixture_loss_ema_buf",
             _torch.tensor(defaults, dtype=_torch.float32),
-            persistent=True,
+            persistent=False,
         )
         buf = model._mixture_loss_ema_buf
     return {_MIXTURE_LOSS_EMA_KEYS[i]: float(buf[i]) for i in range(len(_MIXTURE_LOSS_EMA_KEYS))}
