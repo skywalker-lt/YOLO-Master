@@ -119,14 +119,6 @@ from ultralytics.utils.loss import (
 )
 from ultralytics.utils.ops import make_divisible
 from ultralytics.utils.patches import torch_load
-
-# Experimental littlemod block (MoA-gated UoMoE sparse-P2). Guarded so the library never hard-depends
-# on the experiment dir: if littlemod/ is not importable, MoASparseP2 stays None and parse_model simply
-# won't know the name (configs that don't use it are unaffected).
-try:
-    from littlemod.moa_sparse_p2 import MoASparseP2
-except Exception:  # noqa: BLE001
-    MoASparseP2 = None
 from ultralytics.utils.plotting import feature_visualization
 from ultralytics.utils.torch_utils import (
     fuse_conv_and_bn,
@@ -1756,8 +1748,17 @@ def parse_model(d, ch, verbose=True):
             C2fMoT,
         }
     )
-    if MoASparseP2 is not None:  # experimental littlemod block (arg convention [c1, c2, num_experts, top_k])
-        base_modules = base_modules | {MoASparseP2}
+    # Experimental littlemod block (MoA-gated UoMoE sparse-P2), registered LAZILY here rather than at
+    # module import: littlemod.moa_sparse_p2 imports back into ultralytics.nn.modules.*, so a top-level
+    # import races the package init (circular -> silently None). By parse_model() call time everything is
+    # loaded. Inject into globals() so the `globals()[m]` name lookup below resolves it. Guarded: if
+    # littlemod/ is absent, configs that don't use MoASparseP2 are unaffected.
+    try:
+        from littlemod.moa_sparse_p2 import MoASparseP2
+        globals()["MoASparseP2"] = MoASparseP2
+        base_modules = base_modules | {MoASparseP2}  # arg convention [c1, c2, num_experts, top_k]
+    except Exception:  # noqa: BLE001
+        pass
     repeat_modules = frozenset(  # modules with 'repeat' arguments
         {
             BottleneckCSP,
