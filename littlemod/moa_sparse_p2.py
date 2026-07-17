@@ -53,9 +53,16 @@ class MoASparseP2(nn.Module):
         halo:        receptive-field halo for the sparse detect gather (cv2/cv3 RF radius; 2 for C3k2-ish).
         gate_temperature: MoA router softmax temperature (annealed by the trainer, like MoA/MoT).
         aux_coeff:   weight on the MoA router aux loss (anti-collapse).
-        keep_ratio:  eval budget rho — fraction of cells whose P2 detect branch is actually computed.
+        keep_ratio:  eval budget rho — fraction of cells whose P2 detect branch is actually computed
+                     (only used when ``use_sparse_p2`` is on).
         target_keep: optional soft keep-rate prior added to the aux loss during training (nudges the
                      mean gate toward ``keep_ratio`` so the learned ordering matches the eval budget).
+        use_sparse_p2: EVAL-time toggle (repo idiom, cf. ``ES_MOE.use_sparse_inference``). Default
+                     ``False`` -> the block is the DENSE UoMoE-MoA-P2 baseline (full P2, learned soft
+                     gate applied, nothing dropped). Flip to ``True`` at eval/bench/export for the
+                     window-gated sparse variant (top-rho cells). TRAINING is dense-soft-gate either
+                     way, so baseline and sparse share ONE training run and differ only at inference —
+                     the delta is purely the cost of hardening the gate.
     """
 
     NUM_GROUPS = 2  # group 0 = "compute" (object-dense), group 1 = "skip" (empty)
@@ -63,7 +70,8 @@ class MoASparseP2(nn.Module):
     def __init__(self, c_in: int, c2: int | None = None, num_experts: int = 4, top_k: int = 2,
                  expert_type: str = "inverted", cell: int = 4, halo: int = 2,
                  gate_temperature: float = 1.0, aux_coeff: float = 0.01,
-                 keep_ratio: float = 0.2, target_keep: float | None = None):
+                 keep_ratio: float = 0.2, target_keep: float | None = None,
+                 use_sparse_p2: bool = False):
         super().__init__()
         c2 = c2 or c_in
         self.c_in, self.c2 = c_in, c2
@@ -71,6 +79,7 @@ class MoASparseP2(nn.Module):
         self.aux_coeff = aux_coeff
         self.keep_ratio = keep_ratio
         self.target_keep = keep_ratio if target_keep is None else target_keep
+        self.use_sparse_p2 = use_sparse_p2   # dense baseline (False) vs window-gated sparse (True)
 
         # Expert capacity for the P2 feature (genuinely sparse: top_k of num_experts + shared expert).
         self.moe = UltraOptimizedMoE(c_in, c2, num_experts=num_experts, top_k=top_k,
@@ -113,8 +122,16 @@ class MoASparseP2(nn.Module):
             # alongside the internal UoMoE's own registry entry — different module ids, both counted.
             _registry_set(self, aux)
             self.keep_idx = None
+        elif not self.use_sparse_p2:
+            # DENSE baseline (UoMoE-MoA-P2, default P2): full P2, learned soft gate applied exactly as in
+            # training (no train/eval mismatch), NOTHING dropped. This is the reference the sparse variant
+            # is measured against — identical weights, only the eval path differs.
+            out = feat * F.interpolate(keep_grid, size=(H, W), mode="nearest")
+            self.last_aux_loss = x.new_zeros(())
+            self.keep_idx = None
         else:
-            # Hard, SPARSE: top-rho cells by keep-score; zero the P2 feature elsewhere (feature-gating).
+            # Hard, SPARSE variant: top-rho cells by keep-score; zero the P2 feature elsewhere
+            # (feature-gating). ``keep_idx`` drives SparseP2DetectHead to skip cv2/cv3 off-budget.
             k = max(1, round(self.keep_ratio * gh * gw))
             keep_idx = DensityRouter.select_topk(keep_grid, k)         # [B, k] static
             mask = torch.zeros(B, 1, gh, gw, device=x.device, dtype=feat.dtype)
@@ -127,10 +144,25 @@ class MoASparseP2(nn.Module):
             kg = keep_grid.detach().float()
             self.last_routing_snapshot = {
                 "num_experts": self.moe.num_experts, "top_k": self.moe.top_k,
+                "mode": "train" if self.training else ("sparse" if self.use_sparse_p2 else "dense"),
                 "keep_mean": float(kg.mean()), "keep_max": float(kg.max()),
                 "aux_loss": float(self.last_aux_loss.detach()),
             }
         return out
+
+
+def set_sparse_p2(model: nn.Module, enabled: bool, keep_ratio: float | None = None) -> int:
+    """Flip every MoASparseP2 block between the DENSE baseline (``enabled=False``) and the window-gated
+    sparse variant (``True``) — the eval/bench/export switch (cf. the export script's use_sparse_inference
+    loop). Optionally overrides the eval budget rho. Returns the number of blocks toggled."""
+    n = 0
+    for m in model.modules():
+        if isinstance(m, MoASparseP2):
+            m.use_sparse_p2 = enabled
+            if keep_ratio is not None:
+                m.keep_ratio = keep_ratio
+            n += 1
+    return n
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -157,15 +189,29 @@ def _smoke(c_in=64, H=160, W=160, num_experts=4, top_k=2, rho=0.2):
     print(f"[2] UoMoE   experts={blk.moe.num_experts} top_k={blk.moe.top_k} shared-expert={hasattr(blk.moe,'shared_expert')}  "
           f"{'sparse ✓' if moe_sparse else 'DENSE ✗'}")
 
-    # (3) eval forward: hard top-rho gate produces a keep_idx of the right budget
+    gh = gw = H // blk.cell
+    total = gh * gw
+
+    # (3a) DENSE baseline (use_sparse_p2=False, the default): eval computes the FULL P2, no keep_idx,
+    #      every cell non-zero. This is the reference the sparse variant is compared against.
     blk.eval()
+    set_sparse_p2(blk, False)
+    with torch.no_grad():
+        yb = blk(x)
+    dense_cells = int((F.avg_pool2d((yb != 0).any(1, keepdim=True).float(), blk.cell, blk.cell) > 0).sum().item())
+    dense_ok = blk.keep_idx is None and dense_cells > 1.5 * total   # ~all cells kept across both images
+    print(f"[3a] BASELINE dense  mode={blk.last_routing_snapshot['mode']}  keep_idx={blk.keep_idx}  "
+          f"nonzero-cells={dense_cells}/{2*total}  {'full P2 ✓' if dense_ok else '✗'}")
+
+    # (3b) SPARSE variant (use_sparse_p2=True): hard top-rho gate -> keep_idx of the right budget
+    set_sparse_p2(blk, True, keep_ratio=rho)
     with torch.no_grad():
         ye = blk(x)
-    gh = gw = H // blk.cell
-    k = max(1, round(rho * gh * gw))
-    kept_cells = (F.avg_pool2d((ye != 0).any(1, keepdim=True).float(), blk.cell, blk.cell) > 0).sum().item()
-    print(f"[3] eval    keep_idx={tuple(blk.keep_idx.shape)} (k={k}/{gh*gw}={rho:.0%})  "
-          f"nonzero-cells~={int(kept_cells)}  {'sparse ✓' if blk.keep_idx.shape[1]==k else '✗'}")
+    k = max(1, round(rho * total))
+    kept_cells = int((F.avg_pool2d((ye != 0).any(1, keepdim=True).float(), blk.cell, blk.cell) > 0).sum().item())
+    sparse_ok = blk.keep_idx.shape[1] == k
+    print(f"[3b] SPARSE variant  keep_idx={tuple(blk.keep_idx.shape)} (k={k}/{total}={rho:.0%})  "
+          f"nonzero-cells~={kept_cells}  {'sparse ✓' if sparse_ok else '✗'}")
 
     # (4) SparseP2DetectHead driven by the MoA gate is BIT-EXACT vs dense-then-mask, with FLOP win
     cv2_0 = nn.Sequential(nn.Conv2d(c_in, 16, 3, 1, 1), nn.SiLU(), nn.Conv2d(16, 64, 1)).eval()   # reg/DFL-like
@@ -195,7 +241,7 @@ def _smoke(c_in=64, H=160, W=160, num_experts=4, top_k=2, rho=0.2):
     print(f"[4] sparse-detect  max|err| at kept cells = {maxerr:.2e}  {'BIT-EXACT ✓' if maxerr < 1e-4 else 'MISMATCH ✗'}  "
           f"| P2-detect {2*dense_macs/1e9:.3f}G -> {2*sparse_macs/1e9:.3f}G ({sparse_macs/dense_macs:.2f}x)")
 
-    ok = router_ok and moe_sparse and blk.keep_idx.shape[1] == k and maxerr < 1e-4
+    ok = router_ok and moe_sparse and dense_ok and sparse_ok and maxerr < 1e-4
     print("RESULT:", "ALL PASS ✓" if ok else "FAIL ✗")
     return ok
 

@@ -4,10 +4,12 @@
 #   * UltraOptimizedMoE (UoMoE) backbone experts  — the only genuinely-sparse mixture (shared expert
 #     always on + batched top-k dispatch); same as yolo-master-n-p2-uomoe.yaml.
 #   * MoASparseP2 at the P2/4 detect block (layer 20, was C3k2[128]) — a UoMoE-fed P2 feature gated by
-#     a MoA spatial router: train dense (soft per-cell gate, router learns which cells matter with no GT
-#     density labels), eval sparse (top-rho cells -> the Detect P2 branch runs only there, bit-exact).
-# The P2/4 head is our tiny-object win (see v0.1-P2 beats YOLOv12-X on AI-TOD); this makes its most
-# expensive part (the stride-4 detect branch) spatially sparse via the MoA gate.
+#     a MoA spatial router. Trains dense (soft per-cell gate, router learns which cells matter with no GT
+#     density labels). At EVAL it defaults to DENSE (use_sparse_p2=False) — THIS config IS the
+#     UoMoE-MoA-P2-N *baseline*. Flip use_sparse_p2=True (littlemod.moa_sparse_p2.set_sparse_p2 or the
+#     bench flag) for the window-gated sparse variant (top-rho cells; Detect P2 branch runs only there,
+#     bit-exact). Baseline and sparse share ONE training run -> the mAP delta is purely the gate hardening.
+# The P2/4 head is our tiny-object win (see v0.1-P2 beats YOLOv12-X on AI-TOD).
 # Heads: P2/4, P3/8, P4/16, P5/32 -> Detect x4.
 
 # Parameters
