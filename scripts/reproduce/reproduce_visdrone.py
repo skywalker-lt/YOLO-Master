@@ -17,8 +17,7 @@ Examples:
     python scripts/reproduce/reproduce_visdrone.py --model UoMoE-N --epochs 300            # UltraOptimizedMoE
     python scripts/reproduce/reproduce_visdrone.py --model v0.1-N --no-wandb
     python scripts/reproduce/reproduce_visdrone.py --wandb-project my-proj --wandb-mode offline
-    # Multi-GPU DDP: a comma-list --device auto-relaunches under torchrun (batch is the TOTAL,
-    # split across GPUs). Equivalent to `torchrun --nproc_per_node=4 <this script> ...`.
+    # Multi-GPU DDP (Ultralytics native): comma-list --device; --batch is the TOTAL, split across GPUs.
     python scripts/reproduce/reproduce_visdrone.py --model UoMoE-N --device 0,1,2,3 --batch 128
 """
 from __future__ import annotations

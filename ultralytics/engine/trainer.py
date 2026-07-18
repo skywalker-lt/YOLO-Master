@@ -635,7 +635,15 @@ class BaseTrainer:
             torch.amp.GradScaler("cuda", enabled=self.amp) if TORCH_2_4 else torch.cuda.amp.GradScaler(enabled=self.amp)
         )
         if self.world_size > 1:
-            self.model = nn.parallel.DistributedDataParallel(self.model, device_ids=[RANK], find_unused_parameters=True)
+            # broadcast_buffers=False: MoE blocks register per-rank stats buffers lazily during the
+            # first forward, some on CPU (e.g. load_balancing_loss = torch.tensor(0.0) with no device).
+            # DDP's default per-forward buffer broadcast would hand that CPU tensor to NCCL (CUDA-only)
+            # -> "No backend type associated with device type cpu". Those stats are per-rank and must
+            # not be overwritten by rank 0 anyway; BN running stats are instead synced from rank 0's EMA
+            # before each validation (see validate()), so disabling the auto-broadcast is safe here.
+            self.model = nn.parallel.DistributedDataParallel(
+                self.model, device_ids=[RANK], find_unused_parameters=True, broadcast_buffers=False
+            )
 
         self.ema = ModelEMA(self.model)
         self.optimizer = self.build_optimizer(
