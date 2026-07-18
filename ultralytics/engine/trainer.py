@@ -1752,9 +1752,15 @@ class BaseTrainer:
             fitness (float): Fitness score for the validation.
         """
         if self.ema and self.world_size > 1:
-            # Sync EMA buffers from rank 0 to all ranks
+            # Sync EMA buffers from rank 0 to all ranks. Only CUDA buffers: some MoE blocks
+            # register per-rank stats buffers that live on CPU (e.g. load_balancing_loss via
+            # `torch.tensor(0.0)` with no device), and NCCL has no CPU backend -> broadcasting
+            # one raises "No backend type associated with device type cpu". Those stats do not
+            # affect validation, so skipping them is safe; the device test is identical on every
+            # rank, so the number of collective calls stays matched across ranks.
             for buffer in self.ema.ema.buffers():
-                dist.broadcast(buffer, src=0)
+                if buffer.is_cuda:
+                    dist.broadcast(buffer, src=0)
         metrics = self.validator(self)
         if metrics is None:
             return None, None
