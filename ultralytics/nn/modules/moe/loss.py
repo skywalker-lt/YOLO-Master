@@ -25,9 +25,18 @@ def all_reduce_mean(tensor: torch.Tensor) -> torch.Tensor:
     # across many ranks accumulates large rounding error that cannot be
     # recovered. Cast back to the original dtype after averaging.
     orig_dtype = tensor.dtype
-    out = tensor.float().clone()  # gradient-preserving; float32 for stable reduce
-    dist.all_reduce(out, op=dist.ReduceOp.SUM)
-    out = out / world
+    local = tensor.float()
+    # dist.all_reduce has no registered autograd kernel, so reducing a grad-carrying tensor emits
+    # "c10d::allreduce_ ... trying to backprop through it ... silently incorrect" on every backward.
+    # Reduce a DETACHED copy and re-attach with a straight-through identity: the value is the exact
+    # cross-rank mean, and the gradient flows only to this rank's `local` with weight 1/world. That is
+    # numerically identical -- forward AND backward -- to the previous code (whose all_reduce backward
+    # was already an identity pass-through, followed by /world), so training is unchanged; only the
+    # warning is gone. float32 reduce keeps AMP/DDP precision.
+    reduced = local.detach().clone()
+    dist.all_reduce(reduced, op=dist.ReduceOp.SUM)
+    global_mean = reduced / world  # detached (no autograd through the collective)
+    out = global_mean + (local - local.detach()) / world  # straight-through grad to local
     return out.to(orig_dtype)
 
 
@@ -204,10 +213,16 @@ class MoELoss(nn.Module):
         # We need the global batch size count
         local_count = torch.tensor(tensor.size(0), device=tensor.device, dtype=torch.float32)
 
-        dist.all_reduce(local_sum, op=dist.ReduceOp.SUM)
-        dist.all_reduce(local_count, op=dist.ReduceOp.SUM)
-
-        return (local_sum / local_count.clamp(min=1.0)).to(orig_dtype)
+        # Reduce a DETACHED copy of the (grad-carrying) local sum: dist.all_reduce has no autograd
+        # kernel, so reducing local_sum directly warns ("c10d::allreduce_ ... backprop ... silently
+        # incorrect") every backward. Straight-through re-attach keeps the value == global mean and the
+        # gradient to this rank's local_sum at weight 1/global_count -- numerically identical (forward
+        # and backward) to the previous pass-through code, so training is unchanged; only the warning is gone.
+        reduced_sum = local_sum.detach().clone()
+        dist.all_reduce(reduced_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(local_count, op=dist.ReduceOp.SUM)  # counts, no grad
+        denom = local_count.clamp(min=1.0)
+        return (reduced_sum / denom + (local_sum - local_sum.detach()) / denom).to(orig_dtype)
 
     def forward(
         self,

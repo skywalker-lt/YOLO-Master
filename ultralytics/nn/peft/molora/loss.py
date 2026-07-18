@@ -21,9 +21,15 @@ def all_reduce_mean(tensor: torch.Tensor) -> torch.Tensor:
     if world <= 1:
         return tensor
     orig_dtype = tensor.dtype
-    out = tensor.float().clone()
-    dist.all_reduce(out, op=dist.ReduceOp.SUM)
-    out = out / world
+    local = tensor.float()
+    # dist.all_reduce has no autograd kernel, so reducing a grad-carrying tensor warns
+    # ("c10d::allreduce_ ... backprop ... silently incorrect") every backward. Reduce a DETACHED copy
+    # and re-attach with a straight-through identity: value == cross-rank mean, gradient to this rank's
+    # `local` at weight 1/world -- numerically identical (forward and backward) to the previous
+    # pass-through code, so training is unchanged; only the warning is gone.
+    reduced = local.detach().clone()
+    dist.all_reduce(reduced, op=dist.ReduceOp.SUM)
+    out = reduced / world + (local - local.detach()) / world  # straight-through grad to local
     return out.to(orig_dtype)
 
 
