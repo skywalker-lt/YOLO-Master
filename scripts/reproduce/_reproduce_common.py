@@ -285,6 +285,20 @@ def train_one(args: argparse.Namespace, dataset: DatasetSpec, spec: ModelSpec, p
         for event, fn in _make_wandb_callbacks(run_name, dataset, spec, args, dense_eval).items():
             model.add_callback(event, fn)
 
+    # Optimizer / LR. Default 'auto' -> SGD@0.01 (the tuned recipe; auto IGNORES lr0). If --lr0 is
+    # given, honor it: auto would discard it, so force SGD and pin the auto recipe's momentum (0.9)
+    # and warmup_bias_lr (0.0) so ONLY the LR differs from the proven baseline. Use for large-batch
+    # linear scaling, e.g. batch 256 -> --lr0 0.04 (4x the batch-64 default).
+    opt = {"optimizer": args.optimizer}
+    if args.lr0 is not None:
+        opt["lr0"] = args.lr0
+        if args.optimizer == "auto":
+            opt["optimizer"] = "SGD"
+        opt["momentum"] = 0.9
+        opt["warmup_bias_lr"] = 0.0
+        print(f"[opt] {run_name}: optimizer={opt['optimizer']} lr0={args.lr0} momentum=0.9 "
+              f"warmup_bias_lr=0.0 (only LR differs from the auto->SGD@0.01 recipe)", flush=True)
+
     start = time.time()
     model.train(
         data=dataset.data,
@@ -303,9 +317,8 @@ def train_one(args: argparse.Namespace, dataset: DatasetSpec, spec: ModelSpec, p
                    # silently LoRA-fy the run (train ~24% of params). r=0 disables LoRA (apply_lora no-op).
         es_moe_dense_eval=dense_eval,  # ES_MOE dense eval (--no-sparse-eval). Library-applied via this
                                        # serialized arg so it survives DDP auto-spawn (workers get it).
-        optimizer="auto",  # match the VisDrone/SKU baselines: repo default.yaml drifted to AdamW,
-                           # but auto -> SGD@0.01 (mom 0.9, warmup_bias_lr 0) for long runs. AdamW@0.01
-                           # (10x too high) is what NaN'd AI-TOD EsMoE-N and stuck mAP at 0.
+        **opt,  # optimizer (default 'auto' -> SGD@0.01) + optional --lr0 override (built above). We never
+                # rely on default.yaml's optimizer (drifted to AdamW@0.01, 10x too high; NaN'd AI-TOD).
         val=True,
         plots=True,
         cache=args.cache,
@@ -336,6 +349,13 @@ def build_parser(dataset: DatasetSpec, models=MODELS) -> argparse.ArgumentParser
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--patience", type=int, default=0, help="0 disables early stopping.")
     p.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--optimizer", default="auto",
+                   help="Optimizer. Default 'auto' -> SGD@0.01 (the tuned recipe). NOTE: 'auto' IGNORES "
+                        "--lr0; pass --lr0 (which forces SGD) or an explicit optimizer to set the LR.")
+    p.add_argument("--lr0", type=float, default=None,
+                   help="Initial LR override for large-batch scaling (e.g. --lr0 0.04 for batch 256). "
+                        "Forces optimizer=SGD if 'auto' (which would ignore lr0) and pins the auto recipe's "
+                        "momentum=0.9 / warmup_bias_lr=0 so ONLY the LR differs from the batch-64 baseline.")
     p.add_argument("--cache", nargs="?", const="ram", default=False,
                    help="Cache images: '--cache'/'--cache ram' = RAM, '--cache disk' = on-disk .npy, "
                         "omit to disable. On network-volume (MFS) pods 'ram' can hang building the val "
