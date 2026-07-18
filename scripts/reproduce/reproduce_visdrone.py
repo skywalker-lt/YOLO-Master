@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
-"""Reproduce YOLO-Master-v0.1-N and YOLO-Master-EsMoE-N baselines on VisDrone.
+"""Reproduce YOLO-Master nano baselines on VisDrone.
 
-VisDrone (aerial, dense small objects), built-in config VisDrone.yaml.
-By default the models are reproduced as-is (EsMoE-N keeps its sparse eval, which
-collapses mAP). Add --no-sparse-eval to opt into the corrected dense evaluation
-for EsMoE-N (train==eval); v0.1-N is unaffected.
+VisDrone (aerial, dense small objects), built-in config VisDrone.yaml. The two
+shared nano baselines (v0.1-N, EsMoE-N) plus the UltraOptimizedMoE swaps UoMoE-N
+and UoMoE-P2-N (deployment-optimized MoE -- shared expert like v0.1, ultra-light
+router + batched compute; sparse train==eval, so uses_esmoe=False and
+--no-sparse-eval is a no-op for them). By default the models are reproduced as-is
+(EsMoE-N keeps its sparse eval, which collapses mAP). Add --no-sparse-eval to opt
+into the corrected dense evaluation for EsMoE-N (train==eval); the v0.1 and UoMoE
+models are unaffected.
 
 Examples:
     python scripts/reproduce/reproduce_visdrone.py --check-build
     python scripts/reproduce/reproduce_visdrone.py --epochs 300 --batch 64                 # as-is
     python scripts/reproduce/reproduce_visdrone.py --model EsMoE-N --no-sparse-eval        # corrected
+    python scripts/reproduce/reproduce_visdrone.py --model UoMoE-N --epochs 300            # UltraOptimizedMoE
     python scripts/reproduce/reproduce_visdrone.py --model v0.1-N --no-wandb
     python scripts/reproduce/reproduce_visdrone.py --wandb-project my-proj --wandb-mode offline
     # Multi-GPU DDP: a comma-list --device auto-relaunches under torchrun (batch is the TOTAL,
     # split across GPUs). Equivalent to `torchrun --nproc_per_node=4 <this script> ...`.
-    python scripts/reproduce/reproduce_visdrone.py --device 0,1,2,3 --batch 128 --epochs 300
+    python scripts/reproduce/reproduce_visdrone.py --model UoMoE-N --device 0,1,2,3 --batch 128
 """
 from __future__ import annotations
 
@@ -23,7 +28,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _reproduce_common import DatasetSpec, run_dataset  # noqa: E402
+from _reproduce_common import MODELS, DatasetSpec, ModelSpec, run_dataset  # noqa: E402
+
+# The shared two baselines plus the UltraOptimizedMoE swaps (v0.1 backbone/head with
+# the ModularRouterExpertMoE blocks replaced by UltraOptimizedMoE -- stable shared
+# expert, batched sparse compute, ultra-light router). Sparse train==eval, so
+# uses_esmoe=False (--no-sparse-eval is a no-op for them).
+MODELS_VISDRONE = MODELS + (
+    ModelSpec("UoMoE-N", "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-uomoe.yaml", uses_esmoe=False),
+    ModelSpec("UoMoE-P2-N", "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-p2-uomoe.yaml", uses_esmoe=False),
+)
 
 DATASET = DatasetSpec(
     name="VisDrone",
@@ -33,4 +47,4 @@ DATASET = DatasetSpec(
 
 
 if __name__ == "__main__":
-    raise SystemExit(run_dataset(DATASET))
+    raise SystemExit(run_dataset(DATASET, models=MODELS_VISDRONE))
