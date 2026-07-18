@@ -24,11 +24,13 @@ intentional: the default is a faithful, unmodified reproduction.
 
 Pass ``--no-sparse-eval`` to opt into the CORRECTED evaluation. It is an explicit
 flag (not a silent default) so the change is visible in the command you ran. It
-registers a training callback that flips `ES_MOE.use_sparse_inference=False` on
-both the live model and its EMA at `on_pretrain_routine_end` (before any
-validation and before checkpoints are written from the EMA), so per-epoch val,
-the saved .pt, and final eval all use the same dense forward as training.
-v0.1-N has no ES_MOE modules, so the flag is a no-op there.
+forwards ``es_moe_dense_eval=True`` to ``model.train``; the trainer then flips
+`ES_MOE.use_sparse_inference=False` on both the live model and its EMA in
+``_setup_train`` (before any validation and before checkpoints are written from
+the EMA), so per-epoch val, the saved .pt, and final eval all use the same dense
+forward as training. Driving it through a serialized arg (not a runtime callback)
+means it also applies under Multi-GPU DDP, where auto-spawned workers rebuild the
+trainer from args alone. v0.1-N / UoMoE have no ES_MOE modules, so it is a no-op there.
 
 Multi-GPU (DDP)
 ---------------
@@ -42,13 +44,14 @@ auto-spawns one worker per GPU via ``torch.distributed.run``; the workers do the
 training. ``--batch`` is the TOTAL batch, split evenly across the GPUs (keep it
 divisible by the GPU count).
 
-NOTE: the auto-spawned workers rebuild the trainer from its args alone, so the
-Python callbacks these scripts attach (the ES_MOE ``--no-sparse-eval`` dense-eval
-fix and the W&B logger) run only in this parent, not in the workers. For the UoMoE
-/ v0.1 models that is a non-issue (no ES_MOE; dense-eval is a no-op). EsMoE +
-``--no-sparse-eval`` on multi-GPU would need the dense-eval applied in the library;
-single-GPU EsMoE is unaffected. The DDP correctness fixes the workers DO need (the
-CPU-buffer broadcasts) live in ``ultralytics/engine/trainer.py``, so they apply.
+NOTE: the auto-spawned workers rebuild the trainer from its args alone. Anything
+that must reach them therefore goes through a serialized arg, not a runtime
+callback: the ES_MOE ``--no-sparse-eval`` dense-eval is forwarded as
+``es_moe_dense_eval`` and applied in the trainer's ``_setup_train``, and the
+CPU-buffer DDP fixes live in ``ultralytics/engine/trainer.py`` -- so both apply on
+every rank. The only parent-only piece is this script's custom W&B logger (added
+via ``add_callback``); Ultralytics' own W&B integration still runs in the workers,
+and for these runs W&B is typically ``--wandb-mode offline`` anyway.
 """
 from __future__ import annotations
 
@@ -97,44 +100,6 @@ MODELS = (
     ModelSpec("v0.1-N", "ultralytics/cfg/models/master/v0_1/det/yolo-master-n.yaml", uses_esmoe=False),
     ModelSpec("EsMoE-N", "ultralytics/cfg/models/master/v0/det/yolo-master-n.yaml", uses_esmoe=True),
 )
-
-
-# --------------------------------------------------------------------------- #
-# Dense-validation callback for ES_MOE                                         #
-# --------------------------------------------------------------------------- #
-def _make_dense_inference_callback():
-    """Return a trainer callback that sets ES_MOE.use_sparse_inference=False.
-
-    Applied to both trainer.model and trainer.ema.ema so per-epoch validation
-    (which runs on the EMA), the EMA-derived checkpoints, and the final eval all
-    take the dense forward path that matches training.
-    """
-    from ultralytics.nn.modules.moe.modules import ES_MOE
-    from ultralytics.utils import LOGGER
-
-    state = {"logged": False}
-
-    def _apply(trainer):
-        targets = []
-        model = getattr(trainer, "model", None)
-        if model is not None:
-            targets.append(model)
-        ema = getattr(trainer, "ema", None)
-        if ema is not None and getattr(ema, "ema", None) is not None:
-            targets.append(ema.ema)
-
-        count = 0
-        for target in targets:
-            for module in target.modules():
-                if isinstance(module, ES_MOE):
-                    module.use_sparse_inference = False
-                    count += 1
-        if count and not state["logged"]:
-            LOGGER.info(f"[reproduce] EsMoE dense validation enabled: "
-                        f"use_sparse_inference=False on {count} ES_MOE module(s)")
-            state["logged"] = True
-
-    return _apply
 
 
 # --------------------------------------------------------------------------- #
@@ -316,11 +281,6 @@ def train_one(args: argparse.Namespace, dataset: DatasetSpec, spec: ModelSpec, p
         model = YOLO(str(ROOT / spec.cfg))
         resume = False
 
-    if dense_eval:
-        cb = _make_dense_inference_callback()
-        model.add_callback("on_pretrain_routine_end", cb)
-        model.add_callback("on_train_start", cb)
-
     if args.wandb and args.wandb_mode != "disabled":
         for event, fn in _make_wandb_callbacks(run_name, dataset, spec, args, dense_eval).items():
             model.add_callback(event, fn)
@@ -341,6 +301,8 @@ def train_one(args: argparse.Namespace, dataset: DatasetSpec, spec: ModelSpec, p
         pretrained=False,
         lora_r=0,  # full from-scratch baseline: repo default.yaml ships lora_r=16, which would
                    # silently LoRA-fy the run (train ~24% of params). r=0 disables LoRA (apply_lora no-op).
+        es_moe_dense_eval=dense_eval,  # ES_MOE dense eval (--no-sparse-eval). Library-applied via this
+                                       # serialized arg so it survives DDP auto-spawn (workers get it).
         optimizer="auto",  # match the VisDrone/SKU baselines: repo default.yaml drifted to AdamW,
                            # but auto -> SGD@0.01 (mom 0.9, warmup_bias_lr 0) for long runs. AdamW@0.01
                            # (10x too high) is what NaN'd AI-TOD EsMoE-N and stuck mAP at 0.

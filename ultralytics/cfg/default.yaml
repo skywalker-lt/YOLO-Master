@@ -260,6 +260,7 @@ moa_mot_min_temperature: 0.3 # (float) Minimum router temperature after annealin
 moe_aux_gain: 1.0 # (float) Gain for MoE balance/z-loss auxiliary loss
 mot_aux_gain: 1.0 # (float) Gain for MoT router auxiliary loss
 moa_aux_gain: 1.0 # (float) Gain for MoA router auxiliary loss
+es_moe_dense_eval: False # (bool) force ES_MOE onto the dense forward at eval (use_sparse_inference=False); fixes the sparse-eval mAP collapse. Serialized arg so it survives DDP auto-spawn (unlike a runtime callback)
 
 # MoLoRA (Mixture-of-LoRA) settings -----------------------------------------------------------------------------------------
 molora_num_experts: 0 # (int) Number of experts in MoLoRA layers (0 to disable)

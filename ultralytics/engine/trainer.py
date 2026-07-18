@@ -646,6 +646,8 @@ class BaseTrainer:
             )
 
         self.ema = ModelEMA(self.model)
+        if getattr(self.args, "es_moe_dense_eval", False):
+            self._apply_es_moe_dense_eval()
         self.optimizer = self.build_optimizer(
             model=self.model,
             name=self.args.optimizer,
@@ -1751,6 +1753,33 @@ class BaseTrainer:
             # Clean up hooks
             for hook in hooks:
                 hook.remove()
+
+    def _apply_es_moe_dense_eval(self):
+        """Force ES_MOE blocks onto the dense forward path for validation/inference.
+
+        ES_MOE's default eval path (``use_sparse_inference=True``) prunes to ~1 unnormalized
+        expert while training blends all experts, which collapses validation mAP. Setting
+        ``use_sparse_inference=False`` makes eval match training. Applied to both the live model
+        and its EMA (per-epoch validation runs on the EMA, and checkpoints derive from it), so
+        val, the saved .pt, and the final eval all take the dense path. Gated by the
+        ``es_moe_dense_eval`` arg; because that arg is serialized into ``trainer.args`` it
+        survives Multi-GPU DDP auto-spawn, where a runtime callback would not reach the workers.
+        """
+        try:
+            from ultralytics.nn.modules.moe.modules import ES_MOE
+        except Exception:  # noqa: BLE001  -- ES_MOE absent in this build; nothing to force
+            return
+        targets = [self.model]
+        if self.ema is not None and getattr(self.ema, "ema", None) is not None:
+            targets.append(self.ema.ema)
+        count = 0
+        for target in targets:
+            for module in target.modules():
+                if isinstance(module, ES_MOE):
+                    module.use_sparse_inference = False
+                    count += 1
+        if count and RANK in {-1, 0}:
+            LOGGER.info(f"ES_MOE dense evaluation enabled: use_sparse_inference=False on {count} module(s)")
 
     def validate(self):
         """Run validation on val set using self.validator.
