@@ -166,6 +166,39 @@ def _maybe_reexec_under_torchrun(args: argparse.Namespace, data: str | None = No
           f"    {' '.join(cmd)}", flush=True)
     os.execv(sys.executable, cmd)  # replaces the current process; does not return
 
+
+def _make_ddp_disable_buffer_broadcast_callback():
+    """Return a callback that turns off DDP buffer broadcasting for MoE/MoA models.
+
+    The MoE blocks (``ultralytics/nn/modules/moe/modules.py``) register per-rank stats
+    buffers LAZILY during the first forward -- ``load_balancing_loss`` /
+    ``expert_usage_counts`` / ``training_step`` -- and some are created with no device
+    (e.g. ``torch.tensor(0.0)``), so they land on CPU after ``model.to(device)`` already
+    ran. DDP's default per-forward buffer broadcast (rank0 -> others) then hands a CPU
+    tensor to NCCL (CUDA-only) -> ``RuntimeError: No backend type associated with device
+    type cpu`` on the 2nd iteration. These are non-persistent, per-rank statistics that
+    must NOT be overwritten by rank 0's copy anyway, so disabling the broadcast is both
+    the fix and the correct semantics. Fires on every rank after the model is DDP-wrapped
+    (on_train_start), before the first forward.
+    """
+    from ultralytics.utils import LOGGER
+
+    state = {"logged": False}
+
+    def _apply(trainer):
+        model = getattr(trainer, "model", None)
+        # Only a DistributedDataParallel-wrapped model has ``broadcast_buffers``; on a
+        # single GPU trainer.model is the plain module, so this is a safe no-op there.
+        if model is not None and getattr(model, "broadcast_buffers", False):
+            model.broadcast_buffers = False
+            if not state["logged"]:
+                LOGGER.info("[reproduce] DDP broadcast_buffers=False (MoE per-rank stats buffers are "
+                            "registered lazily/on CPU; avoids the NCCL CPU-buffer broadcast crash)")
+                state["logged"] = True
+
+    return _apply
+
+
 METRIC_KEYS = (
     "metrics/precision(B)",
     "metrics/recall(B)",
@@ -436,6 +469,11 @@ def train_one(args: argparse.Namespace, dataset: DatasetSpec, spec: ModelSpec, p
         cb = _make_dense_inference_callback()
         model.add_callback("on_pretrain_routine_end", cb)
         model.add_callback("on_train_start", cb)
+
+    # DDP: disable per-forward buffer broadcast so NCCL never tries to broadcast a MoE
+    # stats buffer that was lazily registered on CPU (crashes on the 2nd iteration).
+    if WORLD_SIZE > 1:
+        model.add_callback("on_train_start", _make_ddp_disable_buffer_broadcast_callback())
 
     if args.wandb and args.wandb_mode != "disabled":
         for event, fn in _make_wandb_callbacks(run_name, dataset, spec, args, dense_eval).items():
