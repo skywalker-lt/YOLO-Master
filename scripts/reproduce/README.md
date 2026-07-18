@@ -1,9 +1,9 @@
-# Reproduction Methodology for Training the Baseline YOLO-Master-v0.1-N & YOLO-Master-EsMoE-N on VisDrone & SKU-110K
+# Reproduction Methodology for Training the Baseline YOLO-Master-v0.1-N & YOLO-Master-EsMoE-N on VisDrone, SKU-110K, and AI-TOD-v2
  
 
-Reproducible training strategy for the two YOLO-Master nano variants on two dense-scene vertical scenes, with per-epoch logging of the required metrics (mAP50, mAP50-95, box_loss, cls_loss, moe_loss)
+Reproducible training strategy for the two YOLO-Master nano variants on three vertical scenes, with per-epoch logging of the required metrics (mAP50, mAP50-95, box_loss, cls_loss, moe_loss)
 
-📊 **Live training curves for all six runs (Weights & Biases):** https://wandb.ai/yolo-master-reproduce/yolo-master-reproduce
+📊 **Live training curves for all eight runs (Weights & Biases):** https://wandb.ai/yolo-master-reproduce/yolo-master-reproduce
 
 | Model | Config | # Params | MoE characteristics |
 | --- | --- | --- | --- |
@@ -18,8 +18,14 @@ Weights:
 | VisDrone | `YOLO-Master-EsMoE-N` | 0.3499 | 0.2029 | [Download](https://github.com/skywalker-lt/YOLO-Master/releases/download/v0.1.0/yolo-master-esmoe-n-visdrone.pt) |
 | SKU-110K | `YOLO-Master-v0.1-N` | 0.9059 | 0.5821 | [Download](https://github.com/skywalker-lt/YOLO-Master/releases/download/v0.1.0/yolo-master-v01-n-sku110k.pt) |
 | SKU-110K | `YOLO-Master-EsMoE-N` | 0.9041 | 0.5829  | [Download](https://github.com/skywalker-lt/YOLO-Master/releases/download/v0.1.0/yolo-master-esmoe-n-sku110k.pt) |
+| AI-TOD-v2 | `YOLO-Master-v0.1-N` | 0.2822 | 0.1204 | [Download](https://github.com/skywalker-lt/YOLO-Master/releases/download/v0.1.0/yolo-master-v01-n-aitodv2.pt) |
+| AI-TOD-v2 | `YOLO-Master-EsMoE-N` | ≈0 (collapsed) | ≈0 | [Download](https://github.com/skywalker-lt/YOLO-Master/releases/download/v0.1.0/yolo-master-esmoe-n-aitodv2.pt) |
 
 Below is a comprehensive guide on how to reproduce the full training pipeline
+
+### 🚀 Update: New dataset: AI-TOD-v2
+
+[AI-TOD-v2](https://github.com/Chasel-Tsui/AI-TOD-v2) is a much harder aerial **tiny-object** benchmark: 8 classes, ~800px crops, **mean object size ≈ 12px**, and a heavy class imbalance (one class dominates ~88% of the boxes). It pushes the two nano variants well past VisDrone/SKU-110K, and cleanly exposes a difference between their two MoE designs.
 
 ## 1. Setup
 
@@ -59,18 +65,23 @@ pip install -e .
 
 ## 2. Dataset Download
 
+### VisDrone & SKU-110k:
+
 Datasets shall download automatically the first time training initializes. To fetch them manually, execute:
 
 ```bash
 python -c "from ultralytics.data.utils import check_det_dataset; check_det_dataset('VisDrone.yaml', autodownload=True)"
 python -c "from ultralytics.data.utils import check_det_dataset; check_det_dataset('SKU-110K.yaml', autodownload=True)"
 ```
+### AI-TOD-v2:
 
-The dataset will be stored under the default Ultralytics `datasets_dir` , usually under `../datasets` . VisDrone is approximately 2.3GB and SKU-110K is 13.6GB
+Since this dataset is constructed upon the [xVIEW](https://xviewdataset.org) dataset, please refer to the offical [AI-TOD repo](https://github.com/jwwangchn/AI-TOD) for raw image downloads and generation scripts. 
+
+The dataset should be stored under the default Ultralytics `datasets_dir` , usually under `../datasets`. VisDrone is ~2.3GB, SKU-110K ~13.6GB and AI-TOD-v2 is ~27GB
 
 ## 3. Training
 
-Recommended hyperparam settings: `--imgsz 640` ,`--epochs 300` , and adjust batch size `--batch` based on your GPU memory. 
+Recommended hyperparam settings: `--imgsz 640` (`--imgsz 800` is the native resolution of AI-TOD-v2) ,`--epochs 300` , and adjust batch size `--batch` based on your GPU memory. 
 
 ### Full commands
 
@@ -88,6 +99,12 @@ python scripts/reproduce/reproduce_visdrone.py --model EsMoE-N --epochs <epoch> 
 python scripts/reproduce/reproduce_sku110k.py  --model v0.1-N  --epochs <epoch> --batch <batch-size> 
 # YOLO-Master-EsMoE-N
 python scripts/reproduce/reproduce_sku110k.py  --model EsMoE-N --epochs <epoch> --batch <batch-size>  --no-sparse-eval
+
+# ------ AI-TOD-v2 ------
+# YOLO-Master-v0.1-N
+python scripts/reproduce/reproduce_aitodv2.py --model v0.1-N  --imgsz 800 --batch 64 --epochs 300
+# YOLO-Master-EsMoE-N
+python scripts/reproduce/reproduce_aitodv2.py --model EsMoE-N --imgsz 800 --batch 64 --epochs 300 --no-sparse-eval
 ```
 
 ### Key flags
@@ -107,10 +124,7 @@ A training of 100 epochs can already achieve a high mAP. **Only train for 300 or
 
 ### Expected results
 
-`v0.1-N` trains and validates cleanly on both datasets. `EsMoE-N` **also trains
-correctly** (its train losses track `v0.1-N`), ***but with the default sparse
-evaluation its validation mAP collapses***; `--no-sparse-eval` restores it to the
-`v0.1-N` level **(see Known issue 1 for the mechanism)**
+`v0.1-N` trains and validates cleanly all three datasets. `EsMoE-N` **trains correctly** on VisDrone & SKU-110k (its train losses track `v0.1-N`), ***but with the default sparse evaluation its validation mAP collapses***; `--no-sparse-eval` restores it to the `v0.1-N` level **(see Known issue 1 for the mechanism)** on VisDrone & SKU-110k. Moreover, `EsMoE-N`'s routering mechanism **completely collapsed** on AI-TOD-v2 even with `--no-sparse-eval` due to the scale and high complexity of the dataset **(see Known issue 4)**. 
 
 | Model | Dataset | Eval Method | mAP50 | mAP50-95 | W&B Run | Raw Results |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -120,26 +134,30 @@ evaluation its validation mAP collapses***; `--no-sparse-eval` restores it to th
 | v0.1-N | SKU-110K | default | 0.906 | 0.582 | [View](https://wandb.ai/yolo-master-reproduce/yolo-master-reproduce/runs/rogiamt4) | [Download](https://github.com/skywalker-lt/YOLO-Master/releases/download/v0.1.0/result-v0.1n-sku110k.zip) |
 | EsMoE-N | SKU-110K | default (sparse) | 0.305 | 0.136 | [View](https://wandb.ai/yolo-master-reproduce/yolo-master-reproduce/runs/7nofdfnb) | [Download](https://github.com/skywalker-lt/YOLO-Master/releases/download/v0.1.0/result-esmoen-sparse-sku110k.zip) |
 | EsMoE-N | SKU-110K | `--no-sparse-eval` | 0.904 | 0.583 | [View](https://wandb.ai/yolo-master-reproduce/yolo-master-reproduce/runs/yiz22jp3) | [Download](https://github.com/skywalker-lt/YOLO-Master/releases/download/v0.1.0/result-esmoen-sku110k.zip) |
+| v0.1-N | AI-TOD-v2 | default | 0.282 | 0.120 | [View](https://wandb.ai/yolo-master-reproduce/yolo-master-reproduce/runs/x8447xku) | N/A |
+| EsMoE-N | AI-TOD-v2 | `--no-sparse-eval` | ≈0 (collapsed) | ≈0 | [View](https://wandb.ai/yolo-master-reproduce/yolo-master-reproduce/runs/x8447xku) | N/A | 
+
+*The raw results of the AI-TOD-v2 training runs are unavailable. Please check the W&B runs instead.
 
 ### Visualization
 
-| Model | VisDrone | SKU-110K |
-| --- | --- | --- |
-| **v0.1-N** | <img width="2234" height="882" alt="v0.1-visdrone" src="https://github.com/user-attachments/assets/7d076b6f-48aa-48a2-8d0c-31f55164d76b" /> | <img width="2234" height="882" alt="v0.1-sku110k" src="https://github.com/user-attachments/assets/15f98b56-0c47-4665-878f-0fc13e657381" /> |
-| **EsMoE-N (sparse eval)** | <img width="2234" height="882" alt="esmoe-sparse-visdrone" src="https://github.com/user-attachments/assets/e9a0dd9d-e760-4b41-8b06-c076f9793ad9" /> | <img width="2234" height="882" alt="esmoe-sparse-sku110k" src="https://github.com/user-attachments/assets/9fbf7230-fa11-4f55-9609-644a7b973762" /> |
-| **EsMoE-N (`--no-sparse-eval`)** | <img width="2234" height="882" alt="esmoe-visdrone" src="https://github.com/user-attachments/assets/1258edb0-bc03-4f50-84d3-b86507d663f6" /> | <img width="2234" height="882" alt="esmoe-sku110k" src="https://github.com/user-attachments/assets/cc50bd4c-1079-4abd-8b4d-9408d10d01a9" /> |
+| Model | VisDrone | SKU-110K | AI-TOD-v2 |
+| --- | --- | --- | --- |
+| **v0.1-N** | <img width="2234" height="882" alt="v0.1-visdrone" src="https://github.com/user-attachments/assets/7d076b6f-48aa-48a2-8d0c-31f55164d76b" /> | <img width="2234" height="882" alt="v0.1-sku110k" src="https://github.com/user-attachments/assets/15f98b56-0c47-4665-878f-0fc13e657381" /> | <img width="2234" height="882" alt="v0 1-aitodv2" src="https://github.com/user-attachments/assets/e10de077-22ac-4744-ab45-89e56a4cddd2" /> |
+| **EsMoE-N (sparse eval)** | <img width="2234" height="882" alt="esmoe-sparse-visdrone" src="https://github.com/user-attachments/assets/e9a0dd9d-e760-4b41-8b06-c076f9793ad9" /> | <img width="2234" height="882" alt="esmoe-sparse-sku110k" src="https://github.com/user-attachments/assets/9fbf7230-fa11-4f55-9609-644a7b973762" /> | N/A (experiment not conducted) |
+| **EsMoE-N (`--no-sparse-eval`)** | <img width="2234" height="882" alt="esmoe-visdrone" src="https://github.com/user-attachments/assets/1258edb0-bc03-4f50-84d3-b86507d663f6" /> | <img width="2234" height="882" alt="esmoe-sku110k" src="https://github.com/user-attachments/assets/cc50bd4c-1079-4abd-8b4d-9408d10d01a9" /> | <img width="2234" height="882" alt="esmoe-aitodv2" src="https://github.com/user-attachments/assets/8b9bb8d4-f32b-46d3-9176-0a9364889d8e" /> |
 
-***Expected qualitative trend: `--no-sparse-eval` lifts `EsMoE-N` from collapsed (VisDrone) / far-below-baseline (SKU-110K) up to outperform the `v0.1-N` mAP, only with ~1/3 of its parameters.***
+***Expected qualitative trend: `--no-sparse-eval` lifts `EsMoE-N` from collapsed (VisDrone) / far-below-baseline (SKU-110K) up to outperform the `v0.1-N` mAP, only with ~1/3 of its parameters. However, it may not help on AI-TOD-v2 since the rounting mechanism itself is incapable of handling it.***
 
-## 4. Known issues + solutions ‼️Very important‼️
+## 4. Known issues + solutions/takeaways ‼️Very important‼️
 
-### 1. **`EsMoE-N` validation mAP collapses (ES_MOE sparse inference)**
+### 1. **`EsMoE-N` validation mAP collapses on VisDrone & SKU-110k (ES_MOE sparse inference)**
 
 **Symptom.** `EsMoE-N` train losses (`box/cls/dfl`) descend normally — identical to `v0.1-N` — yet its **validation** mAP is near zero (VisDrone only ~0.01) or far below the `v0.1-N` (SKU-110K 0.31 vs 0.91). On VisDrone the mAP peaks mid-training then decays toward zero. 
 
-**Why it happens? The machemism:**
+**Why it happens? The machanism:**
 
-the function `ES_MOE.forward` in `ultralytics/nn/modules/moe/modules.py`) uses two different code paths: 
+the function `ES_MOE.forward` in `ultralytics/nn/modules/moe/modules.py` uses two different code paths: 
 
 - **Training** → `_dense_forward`: it computes **all** experts and sums them weighted by the softmax routing weights, which sum to 1 → output at the correct magnitude.
 - **Inference** → `_sparse_forward` (taken because `use_sparse_inference=True` by default). For these configs (`top_k=None`, i.e. dense softmax over all experts), it:
@@ -153,7 +171,7 @@ So at inference the block emits roughly **one** expert at **~1/N** the activatio
 - sparse (default) → mAP50 0.06
 - forced dense → mAP50 0.35 (≈ the `v0.1-N` result)
 
-The weights are fine; but the inference path is wrongly is configured.
+The weights are fine; but the inference path is wrongly configured.
 
 **Solution.** `--no-sparse-eval` registers a callback that sets `ES_MOE.use_sparse_inference=False` on both the live model and its EMA at `on_pretrain_routine_end` / `on_train_start`, before any validation and before the EMA-derived checkpoints are written. Per-epoch validation, the saved `.pt`, and the final evaluation then all use the dense forward that matches training.
 
@@ -165,7 +183,7 @@ This is fixed at run time (a script flag), not in the library — `ES_MOE`'s def
 
 ### 2. SKU-110K extraction error (`tar ... Operation not permitted`)
 
-**Mechanism.** The dataset downloader extracts the SKU-110K archive with `tar xfz`, which tries to restore the files' archived ownership (`uid` / `gid`). On filesystems that disallow `chown` — for example, many networked, rootless, or container mounts — `tar` prints:
+**The mechanism.** The dataset downloader extracts the SKU-110K archive with `tar xfz`, which tries to restore the files' archived ownership (`uid` / `gid`). On filesystems that disallow `chown` — for example, many networked, rootless, or container mounts — `tar` prints:
 
 ```bash
 Cannot change ownership ... Operation not permitted
@@ -192,6 +210,11 @@ Full training is unaffected because it validates each epoch through the training
 ```python
 model.val(workers=0)
 ```
+### 4. `ES_MOE` routing collapses on AI-TOD-v2
+
+**Mechanism.** On AI-TOD-v2's homogeneous tiny objects, `EsMoE-N`'s pure top-k router collapses onto a single expert — one early MoE layer reaches `>0.8` max-usage — and validation mAP freezes at the noise floor (≈1e-5), even with the built-in routing-collapse recovery. `v0.1-N`'s `ModularRouterExpertMoE` keeps an always-on **shared expert** (a guaranteed signal path independent of the router), so on the *identical* data it trains cleanly to 0.28 mAP50.
+
+**Takeaway.** On tiny-object / low-diversity data, prefer the shared-expert `v0.1-N`; `ES_MOE` needs a larger, more diverse distribution to keep its experts balanced. The AI-TOD-v2 `EsMoE-N` weights above are included for completeness — they are a collapsed model. 
 
 ## 5. Directory for Run logs
 
