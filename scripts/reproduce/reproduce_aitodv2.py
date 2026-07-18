@@ -19,6 +19,9 @@ Examples:
     python scripts/reproduce/reproduce_aitodv2.py --model UoMoE-P2-N --epochs 300           # UltraOptimizedMoE + P2
     python scripts/reproduce/reproduce_aitodv2.py --model v0.1-N --no-wandb
     python scripts/reproduce/reproduce_aitodv2.py --wandb-project my-proj --wandb-mode offline
+    # Multi-GPU DDP: a comma-list --device auto-relaunches under torchrun (batch is the TOTAL,
+    # split across GPUs). Equivalent to `torchrun --nproc_per_node=4 <this script> ...`.
+    python scripts/reproduce/reproduce_aitodv2.py --model UoMoE-P2-N --device 0,1,2,3 --batch 128
 """
 from __future__ import annotations
 

@@ -29,17 +29,114 @@ both the live model and its EMA at `on_pretrain_routine_end` (before any
 validation and before checkpoints are written from the EMA), so per-epoch val,
 the saved .pt, and final eval all use the same dense forward as training.
 v0.1-N has no ES_MOE modules, so the flag is a no-op there.
+
+Multi-GPU (DDP)
+---------------
+Launch the SAME script under ``torchrun`` for data-parallel multi-GPU training::
+
+    torchrun --nproc_per_node=4 scripts/reproduce/reproduce_visdrone.py --batch 64 ...
+
+torchrun is REQUIRED (rather than Ultralytics' ``--device 0,1,2,3`` auto-spawn):
+the auto-spawn regenerates the trainer in a fresh subprocess from its args alone,
+which DROPS the Python callbacks these scripts attach -- the ES_MOE dense-eval fix
+and the W&B logger -- silently reintroducing the EsMoE mAP collapse. Under torchrun
+our script runs in every rank, so those callbacks are present on all of them.
+
+``--batch`` is the TOTAL batch, split evenly across GPUs (must be divisible by the
+GPU count). Rank 0 owns all side-effects: console logs, W&B, and summary.csv.
 """
 from __future__ import annotations
 
 import argparse
 import csv
+import os
+import sys
 import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+
+# --------------------------------------------------------------------------- #
+# Distributed (DDP) context -- populated by torchrun before the process starts #
+# --------------------------------------------------------------------------- #
+RANK = int(os.environ.get("RANK", "-1"))
+LOCAL_RANK = int(os.environ.get("LOCAL_RANK", "-1"))
+WORLD_SIZE = int(os.environ.get("WORLD_SIZE", "1"))
+UNDER_TORCHRUN = "LOCAL_RANK" in os.environ
+
+
+def is_main_process() -> bool:
+    """True on the single process (non-DDP) or on global rank 0 (DDP)."""
+    return RANK in (-1, 0)
+
+
+def _ddp_device(requested: str) -> str:
+    """Under torchrun, force ``device`` to span the whole world (GPUs 0..WORLD_SIZE-1).
+
+    Ultralytics derives its ``world_size`` from ``args.device``; under torchrun the
+    real world size comes from the launcher, so the device string must list one GPU
+    per rank or every rank would collide on a single GPU. Outside torchrun the
+    caller's value is passed through untouched (single-GPU or CPU as given).
+    """
+    if UNDER_TORCHRUN and WORLD_SIZE > 1:
+        return ",".join(str(i) for i in range(WORLD_SIZE))
+    return requested
+
+
+def _teardown_ddp() -> None:
+    """Destroy the process group between models so the next model can re-init it.
+
+    Ultralytics' ``_do_train`` never tears the group down; when we train several
+    models in one torchrun invocation (``--model both``) the second ``_setup_ddp``
+    would raise 'process group already initialized'. The barrier lets rank 0 finish
+    its final_eval before any rank tears down. No-op outside DDP.
+    """
+    try:
+        import torch.distributed as dist
+
+        if dist.is_available() and dist.is_initialized():
+            dist.barrier()
+            dist.destroy_process_group()
+    except Exception:  # noqa: BLE001  -- teardown is best-effort; never mask a training error
+        pass
+
+
+def _device_gpu_count(device) -> int:
+    """Number of GPUs implied by a --device value ('0,1,2,3' -> 4; '0'/'cpu' -> 1)."""
+    if isinstance(device, (list, tuple)):
+        return len(device)
+    if isinstance(device, str) and device not in ("", "cpu", "mps"):
+        return len([d for d in device.split(",") if d != ""])
+    return 1
+
+
+def _maybe_reexec_under_torchrun(args: argparse.Namespace) -> None:
+    """Re-exec this script under torchrun when a multi-GPU --device is requested.
+
+    Keeps the simple ``--device 0,1,2,3`` UX while getting CORRECT DDP: launching
+    via torchrun (``python -m torch.distributed.run``) means our script -- and the
+    callbacks it attaches (ES_MOE dense-eval fix, W&B logger) -- runs in every rank,
+    unlike Ultralytics' built-in auto-spawn which regenerates the trainer from args
+    alone and drops those callbacks. ``os.execv`` replaces this process, so it never
+    returns; each rank then re-enters with ``LOCAL_RANK`` set and trains directly.
+
+    No-op when already under torchrun, on a single GPU/CPU, or in a no-train utility
+    mode (--dry-run / --check-build / --summary-only).
+    """
+    if UNDER_TORCHRUN:
+        return
+    if getattr(args, "dry_run", False) or getattr(args, "check_build", False) or getattr(args, "summary_only", False):
+        return
+    n = _device_gpu_count(args.device)
+    if n <= 1:
+        return
+    cmd = [sys.executable, "-m", "torch.distributed.run", f"--nproc_per_node={n}",
+           os.path.abspath(sys.argv[0]), *sys.argv[1:]]
+    print(f"[reproduce] multi-GPU device={args.device!r} -> relaunching under torchrun ({n} ranks):\n"
+          f"    {' '.join(cmd)}", flush=True)
+    os.execv(sys.executable, cmd)  # replaces the current process; does not return
 
 METRIC_KEYS = (
     "metrics/precision(B)",
@@ -145,6 +242,8 @@ def _make_wandb_callbacks(run_name: str, dataset: "DatasetSpec", spec: "ModelSpe
     state = {"run": None}
 
     def on_train_start(trainer):
+        if not is_main_process():  # under DDP only rank 0 owns the W&B run
+            return
         try:
             import wandb
         except Exception as exc:  # noqa: BLE001
@@ -279,19 +378,29 @@ def train_one(args: argparse.Namespace, dataset: DatasetSpec, spec: ModelSpec, p
     done = _completed_epoch(run_dir)
 
     if best_pt.exists() and done is not None and done + 1 >= args.epochs:
-        print(f"[skip] {run_name}: complete at epoch {done}", flush=True)
+        if is_main_process():
+            print(f"[skip] {run_name}: complete at epoch {done}", flush=True)
         return {"model": spec.name, "status": "skipped"}
+
+    # DDP: --batch is the TOTAL batch; Ultralytics floor-divides it across ranks, so a
+    # non-divisible batch silently drops the remainder. Warn (once, on rank 0).
+    if WORLD_SIZE > 1 and args.batch % WORLD_SIZE and is_main_process():
+        print(f"[reproduce][WARN] batch={args.batch} is not divisible by WORLD_SIZE={WORLD_SIZE}; "
+              f"each rank gets {args.batch // WORLD_SIZE} (remainder dropped).", flush=True)
 
     # Corrected dense evaluation is opt-in via --no-sparse-eval, and only affects
     # ES_MOE models (v0.1-N has none, so it is a no-op there).
     dense_eval = spec.uses_esmoe and not args.sparse_eval
     if last_pt.exists() and done is not None:
-        print(f"[resume] {run_name}: {last_pt} epoch={done} -> {args.epochs}", flush=True)
+        if is_main_process():
+            print(f"[resume] {run_name}: {last_pt} epoch={done} -> {args.epochs}", flush=True)
         model = YOLO(str(last_pt))
         resume = True
     else:
-        print(f"[train] {run_name}: cfg={spec.cfg} data={dataset.data} "
-              f"sparse_eval={args.sparse_eval} dense_eval={dense_eval}", flush=True)
+        if is_main_process():
+            print(f"[train] {run_name}: cfg={spec.cfg} data={dataset.data} "
+                  f"sparse_eval={args.sparse_eval} dense_eval={dense_eval}"
+                  f"{f' ddp_world={WORLD_SIZE}' if WORLD_SIZE > 1 else ''}", flush=True)
         model = YOLO(str(ROOT / spec.cfg))
         resume = False
 
@@ -310,7 +419,7 @@ def train_one(args: argparse.Namespace, dataset: DatasetSpec, spec: ModelSpec, p
         epochs=args.epochs,
         imgsz=args.imgsz,
         batch=args.batch,
-        device=args.device,
+        device=_ddp_device(args.device),
         workers=args.workers,
         seed=args.seed,
         deterministic=True,
@@ -342,9 +451,14 @@ def build_parser(dataset: DatasetSpec, models=MODELS) -> argparse.ArgumentParser
     )
     p.add_argument("--epochs", type=int, default=300, help="Recommended ~300 (adjust to GPU budget).")
     p.add_argument("--imgsz", type=int, default=640)
-    p.add_argument("--batch", type=int, default=64)
-    p.add_argument("--device", default="0")
-    p.add_argument("--workers", type=int, default=16)
+    p.add_argument("--batch", type=int, default=64,
+                   help="TOTAL batch size. Under multi-GPU DDP it is split evenly across GPUs, "
+                        "so keep it divisible by the GPU count.")
+    p.add_argument("--device", default="0",
+                   help="GPU id(s). A single id ('0') trains on one GPU; a comma list ('0,1,2,3') "
+                        "triggers multi-GPU DDP by auto-relaunching this script under torchrun. "
+                        "'cpu' for CPU.")
+    p.add_argument("--workers", type=int, default=16, help="Dataloader workers PER GPU under DDP.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--patience", type=int, default=0, help="0 disables early stopping.")
     p.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
@@ -377,16 +491,24 @@ def build_parser(dataset: DatasetSpec, models=MODELS) -> argparse.ArgumentParser
 def run_dataset(dataset: DatasetSpec, models=MODELS) -> int:
     """Entry point used by the per-dataset scripts."""
     args = build_parser(dataset, models).parse_args()
+
+    # Multi-GPU: if --device lists several GPUs and we're not already under torchrun,
+    # relaunch the whole script under torchrun so every rank keeps this script's
+    # callbacks. Replaces the process (never returns) for the training path.
+    _maybe_reexec_under_torchrun(args)
+
     project = Path(args.project) if Path(args.project).is_absolute() else ROOT / args.project
     specs = list(models) if args.model == "both" else [m for m in models if m.name == args.model]
 
-    wandb_desc = "off" if (not args.wandb or args.wandb_mode == "disabled") else args.wandb_mode
-    print(f"[reproduce:{dataset.name}] data={dataset.data}  project={project}  "
-          f"sparse_eval={args.sparse_eval}  wandb={wandb_desc}")
-    for s in specs:
-        dense = s.uses_esmoe and not args.sparse_eval
-        note = f"dense_eval={dense}" if s.uses_esmoe else "no ES_MOE (sparse-eval n/a)"
-        print(f"  - {s.name:<8} cfg={s.cfg}  {note}")
+    if is_main_process():
+        wandb_desc = "off" if (not args.wandb or args.wandb_mode == "disabled") else args.wandb_mode
+        ddp_desc = f"  ddp={WORLD_SIZE}x (torchrun)" if WORLD_SIZE > 1 else ""
+        print(f"[reproduce:{dataset.name}] data={dataset.data}  project={project}  "
+              f"sparse_eval={args.sparse_eval}  wandb={wandb_desc}{ddp_desc}")
+        for s in specs:
+            dense = s.uses_esmoe and not args.sparse_eval
+            note = f"dense_eval={dense}" if s.uses_esmoe else "no ES_MOE (sparse-eval n/a)"
+            print(f"  - {s.name:<8} cfg={s.cfg}  {note}")
 
     if args.dry_run:
         return 0
@@ -394,10 +516,12 @@ def run_dataset(dataset: DatasetSpec, models=MODELS) -> int:
         from ultralytics.nn.tasks import DetectionModel
         for s in specs:
             m = DetectionModel(str(ROOT / s.cfg), ch=3, nc=80, verbose=False)
-            print(f"[build-ok] {s.name}: {sum(p.numel() for p in m.parameters()) / 1e6:.3f}M  ({s.cfg})")
+            if is_main_process():
+                print(f"[build-ok] {s.name}: {sum(p.numel() for p in m.parameters()) / 1e6:.3f}M  ({s.cfg})")
         return 0
     if args.summary_only:
-        print("[summary]", write_summary(project, dataset, specs, sparse_eval=args.sparse_eval))
+        if is_main_process():
+            print("[summary]", write_summary(project, dataset, specs, sparse_eval=args.sparse_eval))
         return 0
 
     project.mkdir(parents=True, exist_ok=True)
@@ -406,19 +530,26 @@ def run_dataset(dataset: DatasetSpec, models=MODELS) -> int:
         try:
             statuses.append(train_one(args, dataset, s, project))
         except Exception as exc:  # noqa: BLE001
-            print(f"[fail] {s.name}: {type(exc).__name__}: {exc}", flush=True)
-            traceback.print_exc()
+            rank_tag = f" (rank {RANK})" if WORLD_SIZE > 1 else ""
+            print(f"[fail] {s.name}{rank_tag}: {type(exc).__name__}: {exc}", flush=True)
+            if is_main_process():
+                traceback.print_exc()
             statuses.append({"model": s.name, "status": "failed", "error": str(exc)})
             if args.stop_on_failure:
                 break
         finally:
-            try:
-                write_summary(project, dataset, specs, sparse_eval=args.sparse_eval)
-            except OSError as e:
-                print(f"[summary-warn] {e}", flush=True)
+            if is_main_process():
+                try:
+                    write_summary(project, dataset, specs, sparse_eval=args.sparse_eval)
+                except OSError as e:
+                    print(f"[summary-warn] {e}", flush=True)
+            # Tear the DDP group down between models so the next model can re-init it
+            # (Ultralytics leaves it up). All ranks must call this; no-op outside DDP.
+            _teardown_ddp()
 
-    print(f"\n[reproduce:{dataset.name}] DONE")
-    for st in statuses:
-        print("  ", st)
+    if is_main_process():
+        print(f"\n[reproduce:{dataset.name}] DONE")
+        for st in statuses:
+            print("  ", st)
     ok = {"ok", "resumed", "skipped"}
     return 0 if all(st.get("status") in ok for st in statuses) else 1
