@@ -18,6 +18,10 @@ What the callbacks handle in every rank (no library edits required):
     from hitting the same NCCL-CPU crash.
   * ES_MOE dense eval (``--no-sparse-eval``) -- flips ``use_sparse_inference=False`` on the model + EMA
     so eval matches training (ES_MOE's sparse eval otherwise collapses mAP). No serialized arg needed.
+  * MoE balance-loss all_reduce skipped at eval (``patch_moe_eval_allreduce``) -- ES_MOE runs its
+    cross-rank balance-loss all_reduce on EVERY forward, including validation; under DDP that collective
+    deadlocks the ranks at the first-epoch eval. It is a training-only aux term, so we skip it when grad
+    is disabled (symmetric across ranks; training unchanged).
 The benign ``c10d::allreduce_`` autograd warning from the MoE balance-loss all_reduce is filtered out.
 
 Usage (comma-separated --device with >=2 GPUs; --batch is the TOTAL, split across GPUs):
@@ -119,6 +123,37 @@ def _cb_es_moe_dense_eval(trainer):
         for mod in tgt.modules():
             if isinstance(mod, ES_MOE):
                 mod.use_sparse_inference = False
+
+
+def patch_moe_eval_allreduce() -> None:
+    """Skip the MoE balance-loss cross-rank all_reduce during eval (grad disabled).
+
+    ES_MOE.forward computes its load-balancing loss (`_compute_load_balancing_loss` ->
+    `gshard_balance_loss(reduce_ddp=True)` -> `all_reduce_mean` -> `dist.all_reduce`) UNCONDITIONALLY,
+    i.e. on every forward including validation. Validation runs under `smart_inference_mode` and is
+    rank-asymmetric under DDP, so that collective DEADLOCKS the ranks at the first-epoch eval (UoMoE
+    gates the same all_reduce behind `if self.training`, which is why it doesn't hang). The balance loss
+    is a training-only aux term whose value is unused at eval, so we make `all_reduce_mean` a no-op when
+    grad is disabled: symmetric across ranks (all skip together), training unchanged (grad on -> reduces
+    normally). Done here (script side) so a clean repo needs no library edit; runs in every torchrun rank.
+    """
+    try:
+        import torch
+        import ultralytics.nn.modules.moe.loss as _ml
+
+        orig = _ml.all_reduce_mean
+        if getattr(orig, "_eval_guarded", False):
+            return
+
+        def all_reduce_mean(tensor):
+            if not torch.is_grad_enabled():  # eval / inference -> no cross-rank collective
+                return tensor
+            return orig(tensor)
+
+        all_reduce_mean._eval_guarded = True
+        _ml.all_reduce_mean = all_reduce_mean
+    except Exception:  # noqa: BLE001  -- if the module layout differs, leave the original in place
+        pass
 
 
 # --------------------------------------------------------------------------- #
@@ -358,6 +393,7 @@ def main() -> int:
         _reexec_under_torchrun(args, ds["data"], n_gpu)  # pre-stages, then os.execv -> does not return
 
     # --- now running as a torchrun rank ---
+    patch_moe_eval_allreduce()  # ES_MOE all_reduces on every forward incl. eval -> deadlocks DDP val
     project.mkdir(parents=True, exist_ok=True)
     statuses = []
     for m in models:
