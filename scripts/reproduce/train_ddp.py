@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import socket
 import sys
 import time
 import warnings
@@ -136,10 +137,18 @@ def _prestage_dataset(data: str) -> None:
               f"ranks will each run their own check.", flush=True)
 
 
+def _free_port() -> int:
+    """Pick a free localhost TCP port (avoids torchrun's default 29500 colliding with a stale/other run)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 def _reexec_under_torchrun(args: argparse.Namespace, data: str, n: int) -> None:
     """Pre-stage the dataset, then replace this process with a torchrun launch of the same command."""
     _prestage_dataset(data)
-    cmd = [sys.executable, "-m", "torch.distributed.run", f"--nproc_per_node={n}",
+    cmd = [sys.executable, "-m", "torch.distributed.run",
+           f"--nproc_per_node={n}", f"--master_port={_free_port()}",  # dynamic port -> no EADDRINUSE
            os.path.abspath(sys.argv[0]), *sys.argv[1:]]
     print(f"[train_ddp] launching {n}-way DDP via torchrun:\n    {' '.join(cmd)}", flush=True)
     os.execv(sys.executable, cmd)  # replaces this process; does not return
