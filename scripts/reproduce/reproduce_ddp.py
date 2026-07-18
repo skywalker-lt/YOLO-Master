@@ -21,11 +21,11 @@ What the callbacks handle in every rank (no library edits required):
 The benign ``c10d::allreduce_`` autograd warning from the MoE balance-loss all_reduce is filtered out.
 
 Usage (comma-separated --device with >=2 GPUs; --batch is the TOTAL, split across GPUs):
-    python scripts/reproduce/train_ddp.py --dataset VisDrone  --model UoMoE-N   --device 0,1 --batch 128
-    python scripts/reproduce/train_ddp.py --dataset AI-TOD-v2 --model v0.1-P2-N --device 0,1,2,3 --batch 128
-    python scripts/reproduce/train_ddp.py --dataset SKU-110K  --model EsMoE-N   --device 0,1 --no-sparse-eval
-    python scripts/reproduce/train_ddp.py --dataset VisDrone  --model UoMoE-N   --device 0,1 --batch 256 --lr0 0.04
-    python scripts/reproduce/train_ddp.py --dataset VisDrone  --model all       --device 0,1 --dry-run
+    python scripts/reproduce/reproduce_ddp.py --dataset VisDrone  --model UoMoE-N   --device 0,1 --batch 128
+    python scripts/reproduce/reproduce_ddp.py --dataset AI-TOD-v2 --model v0.1-P2-N --device 0,1,2,3 --batch 128
+    python scripts/reproduce/reproduce_ddp.py --dataset SKU-110K  --model EsMoE-N   --device 0,1 --no-sparse-eval
+    python scripts/reproduce/reproduce_ddp.py --dataset VisDrone  --model UoMoE-N   --device 0,1 --batch 256 --lr0 0.04
+    python scripts/reproduce/reproduce_ddp.py --dataset VisDrone  --model all       --device 0,1 --dry-run
 
 Specific GPUs: this uses torchrun's single-node convention (GPUs 0..N-1). To pin others, set
 CUDA_VISIBLE_DEVICES=4,5 and pass --device 0,1.
@@ -130,10 +130,10 @@ def _prestage_dataset(data: str) -> None:
     try:
         from ultralytics.data.utils import check_det_dataset
 
-        print(f"[train_ddp] pre-staging dataset '{data}' once before DDP launch...", flush=True)
+        print(f"[reproduce_ddp] pre-staging dataset '{data}' once before DDP launch...", flush=True)
         check_det_dataset(data, autodownload=True)
     except Exception as exc:  # noqa: BLE001
-        print(f"[train_ddp][WARN] dataset pre-stage failed ({type(exc).__name__}: {exc}); "
+        print(f"[reproduce_ddp][WARN] dataset pre-stage failed ({type(exc).__name__}: {exc}); "
               f"ranks will each run their own check.", flush=True)
 
 
@@ -150,7 +150,7 @@ def _reexec_under_torchrun(args: argparse.Namespace, data: str, n: int) -> None:
     cmd = [sys.executable, "-m", "torch.distributed.run",
            f"--nproc_per_node={n}", f"--master_port={_free_port()}",  # dynamic port -> no EADDRINUSE
            os.path.abspath(sys.argv[0]), *sys.argv[1:]]
-    print(f"[train_ddp] launching {n}-way DDP via torchrun:\n    {' '.join(cmd)}", flush=True)
+    print(f"[reproduce_ddp] launching {n}-way DDP via torchrun:\n    {' '.join(cmd)}", flush=True)
     os.execv(sys.executable, cmd)  # replaces this process; does not return
 
 
@@ -339,7 +339,7 @@ def main() -> int:
 
     if is_main():
         imgsz = args.imgsz or ds["imgsz"]
-        print(f"[train_ddp] dataset={args.dataset} data={ds['data']} imgsz={imgsz} project={project}\n"
+        print(f"[reproduce_ddp] dataset={args.dataset} data={ds['data']} imgsz={imgsz} project={project}\n"
               f"            models={models} device={args.device} ({n_gpu} GPUs) batch={args.batch}(total) "
               f"epochs={args.epochs} wandb={args.wandb_mode}", flush=True)
         for m in models:
@@ -373,7 +373,7 @@ def main() -> int:
             _teardown_ddp()  # let the next model re-init the process group (all ranks call this)
 
     if is_main():
-        print(f"\n[train_ddp] DONE — {args.dataset}")
+        print(f"\n[reproduce_ddp] DONE — {args.dataset}")
         for st in statuses:
             print("  ", st)
     ok = {"ok", "resumed", "skipped"}
