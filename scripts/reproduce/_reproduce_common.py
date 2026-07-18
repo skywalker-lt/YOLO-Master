@@ -112,7 +112,30 @@ def _device_gpu_count(device) -> int:
     return 1
 
 
-def _maybe_reexec_under_torchrun(args: argparse.Namespace) -> None:
+def _prestage_dataset(data: str) -> None:
+    """Download + prepare the dataset ONCE, in this single parent process.
+
+    Ultralytics initializes the DDP process group only inside ``_do_train`` -- AFTER
+    the trainer's ``__init__`` dataset check -- so its ``torch_distributed_zero_first``
+    download-once barrier is a no-op under torchrun (the group isn't up yet). Without
+    this, every rank would download and, worse, run the label conversion concurrently
+    (e.g. VisDrone ``visdrone2yolo`` moves images and rmtree's source dirs), which
+    races and can corrupt a first-time dataset build. Native auto-spawn avoids it
+    because the single parent prepares data before any subprocess starts; we do the
+    same here, right before relaunching under torchrun. No-op once the data exists.
+    """
+    try:
+        from ultralytics.data.utils import check_det_dataset
+
+        print(f"[reproduce] pre-staging dataset '{data}' in one process before DDP launch "
+              f"(avoids concurrent multi-rank download/convert races)...", flush=True)
+        check_det_dataset(data, autodownload=True)
+    except Exception as exc:  # noqa: BLE001  -- fall back to per-rank check rather than block training
+        print(f"[reproduce][WARN] dataset pre-stage failed ({type(exc).__name__}: {exc}); "
+              f"ranks will each run their own check (first-time build may race).", flush=True)
+
+
+def _maybe_reexec_under_torchrun(args: argparse.Namespace, data: str | None = None) -> None:
     """Re-exec this script under torchrun when a multi-GPU --device is requested.
 
     Keeps the simple ``--device 0,1,2,3`` UX while getting CORRECT DDP: launching
@@ -121,6 +144,9 @@ def _maybe_reexec_under_torchrun(args: argparse.Namespace) -> None:
     unlike Ultralytics' built-in auto-spawn which regenerates the trainer from args
     alone and drops those callbacks. ``os.execv`` replaces this process, so it never
     returns; each rank then re-enters with ``LOCAL_RANK`` set and trains directly.
+
+    Before relaunching, the dataset is pre-staged once (see ``_prestage_dataset``) so
+    the ranks never race on a first-time download/convert.
 
     No-op when already under torchrun, on a single GPU/CPU, or in a no-train utility
     mode (--dry-run / --check-build / --summary-only).
@@ -132,6 +158,8 @@ def _maybe_reexec_under_torchrun(args: argparse.Namespace) -> None:
     n = _device_gpu_count(args.device)
     if n <= 1:
         return
+    if data:
+        _prestage_dataset(data)
     cmd = [sys.executable, "-m", "torch.distributed.run", f"--nproc_per_node={n}",
            os.path.abspath(sys.argv[0]), *sys.argv[1:]]
     print(f"[reproduce] multi-GPU device={args.device!r} -> relaunching under torchrun ({n} ranks):\n"
@@ -493,9 +521,10 @@ def run_dataset(dataset: DatasetSpec, models=MODELS) -> int:
     args = build_parser(dataset, models).parse_args()
 
     # Multi-GPU: if --device lists several GPUs and we're not already under torchrun,
-    # relaunch the whole script under torchrun so every rank keeps this script's
-    # callbacks. Replaces the process (never returns) for the training path.
-    _maybe_reexec_under_torchrun(args)
+    # pre-stage the dataset once, then relaunch the whole script under torchrun so every
+    # rank keeps this script's callbacks. Replaces the process (never returns) for the
+    # training path.
+    _maybe_reexec_under_torchrun(args, data=dataset.data)
 
     project = Path(args.project) if Path(args.project).is_absolute() else ROOT / args.project
     specs = list(models) if args.model == "both" else [m for m in models if m.name == args.model]
