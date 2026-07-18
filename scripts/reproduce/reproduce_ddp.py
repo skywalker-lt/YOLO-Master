@@ -156,6 +156,37 @@ def patch_moe_eval_allreduce() -> None:
         pass
 
 
+def patch_contiguous_sampler() -> None:
+    """Fix ContiguousDistributedSampler when there are fewer whole batches than ranks.
+
+    The repo's rect-mode DDP sampler hands whole BATCHES to ranks. When
+    ``ceil(len(dataset) / batch) < num_replicas`` -- e.g. the 548-image VisDrone val set with a val
+    batch of 256 (train_batch/rank x 2) across 4 GPUs gives 3 batches for 4 ranks -- the trailing
+    rank(s) get ``start_idx > end_idx``, so ``__len__`` returns negative:
+    ``ValueError: __len__() should return >= 0`` at the first-epoch eval. Degenerate to per-sample
+    distribution (batch_size=1) in that case, which is exactly the class's existing
+    ``batch_size >= total_size`` fallback -- every rank then gets an even, non-negative share. The
+    ``__init__`` wrapper is signature-agnostic (passes *args/**kwargs through), and runs in every rank.
+    """
+    try:
+        from ultralytics.data.build import ContiguousDistributedSampler as _S
+
+        orig_init = _S.__init__
+        if getattr(orig_init, "_smallset_guarded", False):
+            return
+
+        def __init__(self, *args, **kwargs):
+            orig_init(self, *args, **kwargs)
+            if getattr(self, "num_batches", 1) < getattr(self, "num_replicas", 1):
+                self.batch_size = 1  # round-robin: num_batches == total_size >= num_replicas
+                self.num_batches = self.total_size
+
+        __init__._smallset_guarded = True
+        _S.__init__ = __init__
+    except Exception:  # noqa: BLE001  -- absent/renamed in this build -> leave stock behaviour
+        pass
+
+
 # --------------------------------------------------------------------------- #
 # torchrun self-relaunch + dataset pre-stage + group teardown                 #
 # --------------------------------------------------------------------------- #
@@ -393,7 +424,8 @@ def main() -> int:
         _reexec_under_torchrun(args, ds["data"], n_gpu)  # pre-stages, then os.execv -> does not return
 
     # --- now running as a torchrun rank ---
-    patch_moe_eval_allreduce()  # ES_MOE all_reduces on every forward incl. eval -> deadlocks DDP val
+    patch_moe_eval_allreduce()   # ES_MOE all_reduces on every forward incl. eval -> deadlocks DDP val
+    patch_contiguous_sampler()   # small val set / large batch / many ranks -> negative sampler __len__
     project.mkdir(parents=True, exist_ok=True)
     statuses = []
     for m in models:
