@@ -23,9 +23,22 @@ Weights:
 
 Below is a comprehensive guide on how to reproduce the full training pipeline
 
-### 🚀 Update: New dataset: AI-TOD-v2
+---
 
-[AI-TOD-v2](https://github.com/Chasel-Tsui/AI-TOD-v2) is a much harder aerial **tiny-object** benchmark: 8 classes, ~800px crops, **mean object size ≈ 12px**, and a heavy class imbalance (one class dominates ~88% of the boxes). It pushes the two nano variants well past VisDrone/SKU-110K, and cleanly exposes a difference between their two MoE designs.
+### 🚀 Updates (Latest First)
+
+- **Multi-GPU DDP Training:** All baseline models and datasets now support DDP training with up to **8 GPUs**. See [this section](#new-ddp-training).
+- **AI-TOD-v2 Dataset:** [AI-TOD-v2](https://github.com/Chasel-Tsui/AI-TOD-v2) is a much harder aerial **tiny-object** benchmark: 8 classes, ~800px crops, **mean object size ≈ 12px**, and a heavy class imbalance (one class dominates ~88% of the boxes). It pushes the two nano variants well past VisDrone/SKU-110K, and cleanly exposes a difference between their two MoE designs.
+- 
+
+## Table of Contents
+- [1. Setup](#1-setup)
+- [2. Dataset Download](#2-dataset-download)
+- [3. Training](#3-training)
+  - [⚡️ (NEW!) DDP Training](#new-ddp-training)
+- [4. Known issues + solutions/takeaways](#4-known-issues--solutionstakeaways)
+- [5. Directory for Run logs](#5-directory-for-run-logs)
+- [6. P2 & UoMoE Variants for Tiny Object Detection]()
 
 ## 1. Setup
 
@@ -124,7 +137,7 @@ A training of 100 epochs can already achieve a high mAP. **Only train for 300 or
 
 ---
 
-### ⚡️(NEW!) DDP Training 
+### (NEW!) DDP Training 
 The default scripts `reproduce_visdrone.py`, `reproduce_sku110k.py`, and `reproduce_aitodv2.py` only work with single GPU. Here, we also provide a script dedicated for distributed training. It's compatible with all of three models and the three datasets in the default scripts and runs smoothly on NVIDIA's mainstream datacenter GPUs (we have tested A100, H100, H200, and B200). 
 
 > Note: it can only run **within** the node and will not work accross multiple physical servers even if they joined by an IB switch. 
@@ -199,7 +212,7 @@ python scripts/reproduce/reproduce_ddp.py --dataset VisDrone --model UoMoE-N --d
 
 ***Expected qualitative trend: `--no-sparse-eval` lifts `EsMoE-N` from collapsed (VisDrone) / far-below-baseline (SKU-110K) up to outperform the `v0.1-N` mAP, only with ~1/3 of its parameters. However, it may not help on AI-TOD-v2 since the rounting mechanism itself is incapable of handling it.***
 
-## 4. Known issues + solutions/takeaways ‼️Very important‼️
+## 4. Known issues + solutions/takeaways
 
 ### 1. **`EsMoE-N` validation mAP collapses on VisDrone & SKU-110k (ES_MOE sparse inference)**
 
@@ -288,5 +301,64 @@ runs/reproduce/<dataset>/summary.csv
 ```
 
 aggregates the final metrics for both models, including a `dense_eval` column that records whether `--no-sparse-eval` was applied.
+
+## 6. P2 & UoMoE Variants for Tiny Object Detection
+
+This formally integrates the improved models in issues #98 & #126. 
+
+Four additional nano models, `v0.1-P2`, `EsMoE-P2`, `UoMoE` and `UoMoE-P2` derived from the two baselines, now available on every dataset and every reproduce script. Same recipe as the baselines (`optimizer=auto` → SGD@0.01, `lora_r=0`, `deterministic`, `seed 42`, `patience 0`); just pass `--model <name>`.
+
+### How and Why they works?
+
+
+
+
+### Model Specs
+
+| Name | Derived from | Params | Notes |
+|---|---|---|---|
+| `v0.1-P2-N` | `v0.1-N` + P2/4 head | 7.67M | tiny-object variant |
+| `EsMoE-P2-N` | `EsMoE-N` + P2/4 head | 2.81M | tiny-object; **needs `--no-sparse-eval`** |
+| `UoMoE-N` | `v0.1-N`, MoE blocks → UltraOptimizedMoE | 7.45M | ~20–30% fewer GFLOPs at equal params |
+| `UoMoE-P2-N` | `UoMoE-N` + P2/4 head | 7.57M | UoMoE + tiny-object head |
+
+> **`--no-sparse-eval`** matters only for `EsMoE-P2-N` (an ES_MOE model): its default sparse eval
+> collapses mAP, so pass the flag for correct dense evaluation. It is a no-op for the v0.1/UoMoE variants.
+
+Sanity-check (instant, no training):
+
+```bash
+python scripts/reproduce/reproduce_visdrone.py --check-build --model UoMoE-P2-N
+```
+
+### Training Commands
+
+
+#### Single-GPU / per-dataset scripts
+
+```bash
+# P2 variants
+python scripts/reproduce/reproduce_aitodv2.py  --model v0.1-P2-N  --epochs 300 --batch 64
+python scripts/reproduce/reproduce_aitodv2.py  --model EsMoE-P2-N --epochs 300 --batch 64 --no-sparse-eval
+
+# UoMoE variants
+python scripts/reproduce/reproduce_visdrone.py --model UoMoE-N    --epochs 300 --batch 64
+python scripts/reproduce/reproduce_visdrone.py --model UoMoE-P2-N --epochs 300 --batch 64
+```
+
+#### Multi-GPU DDP (`reproduce_ddp.py`)
+
+`--device` must list ≥2 GPUs; `--batch` is the TOTAL across GPUs. Use `--workers 0` on the py-3.14 stack.
+
+```bash
+python scripts/reproduce/reproduce_ddp.py --dataset AI-TOD-v2 --model v0.1-P2-N  --device 0,1,2,3 --batch 128 --workers 0
+python scripts/reproduce/reproduce_ddp.py --dataset AI-TOD-v2 --model EsMoE-P2-N --device 0,1,2,3 --batch 128 --no-sparse-eval --workers 0
+python scripts/reproduce/reproduce_ddp.py --dataset VisDrone  --model UoMoE-N    --device 0,1,2,3 --batch 128 --workers 0
+python scripts/reproduce/reproduce_ddp.py --dataset VisDrone  --model UoMoE-P2-N --device 0,1     --batch 512 --lr0 0.04 --workers 0
+```
+
+> SKU-110K is *large-object-dense* dataset — the P2/UoMoE variants are provided for completeness there but are not tuned/tested on that dataset.
+
+---
 
 **Should you have any questions or doubts, feel free to make a comment or contact: rlici@connect.ust.hk**
