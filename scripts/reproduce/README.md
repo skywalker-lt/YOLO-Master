@@ -26,10 +26,9 @@ Below is a comprehensive guide on how to reproduce the full training pipeline
 ---
 
 ### 🚀 Updates (Latest First)
-
-- **Multi-GPU DDP Training:** All baseline models and datasets now support DDP training with up to **8 GPUs**. See [this section](#new-ddp-training).
-- **AI-TOD-v2 Dataset:** [AI-TOD-v2](https://github.com/Chasel-Tsui/AI-TOD-v2) is a much harder aerial **tiny-object** benchmark: 8 classes, ~800px crops, **mean object size ≈ 12px**, and a heavy class imbalance (one class dominates ~88% of the boxes). It pushes the two nano variants well past VisDrone/SKU-110K, and cleanly exposes a difference between their two MoE designs.
-- 
+- **⭐️ 2026-07-19: Optimized P2 and UoMoE Models for Tiny Object Detection:** Four new nano variants (`v0.1-P2`, `EsMoE-P2`, `UoMoE`, `UoMoE-P2`) that attack the sub-8px floor from two orthogonal angles — a stride-4 **P2 head** (spatial resolution) and **UoMoE** routing (feature/compute allocation). `UoMoE-N`, `v0.1-P2-N` and `UoMoE-P2-N` are the only real-time N-tier detectors to break **≥20% AP on AI-TOD-v2**, outperforming YOLOv12-X by ~5 AP at ~10% of its FLOPs. See [this section](#6-p2--uomoe-variants-for-tiny-object-detection).
+- **⚡️ 2026-07-18: Multi-GPU DDP Training:** All baseline models and datasets now support DDP training with up to **8 GPUs**. See [this section](#new-ddp-training).
+- **🔎 2026-07-14: AI-TOD-v2 Dataset:** [AI-TOD-v2](https://github.com/Chasel-Tsui/AI-TOD-v2) is a much harder aerial **tiny-object** benchmark: 8 classes, ~800px crops, **mean object size ≈ 12px**, and a heavy class imbalance (one class dominates ~88% of the boxes). It pushes the two nano variants well past VisDrone/SKU-110K, and cleanly exposes a difference between their two MoE designs. See [this section](#new-ddp-training).
 
 ## Table of Contents
 - [1. Setup](#1-setup)
@@ -38,7 +37,7 @@ Below is a comprehensive guide on how to reproduce the full training pipeline
   - [⚡️ (NEW!) DDP Training](#new-ddp-training)
 - [4. Known issues + solutions/takeaways](#4-known-issues--solutionstakeaways)
 - [5. Directory for Run logs](#5-directory-for-run-logs)
-- [6. P2 & UoMoE Variants for Tiny Object Detection]()
+- [6. P2 & UoMoE Variants for Tiny Object Detection](#p2--uomoe-variants-for-tiny-object-detection)
 
 ## 1. Setup
 
@@ -304,23 +303,101 @@ aggregates the final metrics for both models, including a `dense_eval` column th
 
 ## 6. P2 & UoMoE Variants for Tiny Object Detection
 
-This formally integrates the improved models in issues #98 & #126. 
+This formally integrates the improved models in issues [#98](https://github.com/Tencent/YOLO-Master/issues/98) & [#126](https://github.com/Tencent/YOLO-Master/issues/126). 
 
 Four additional nano models, `v0.1-P2`, `EsMoE-P2`, `UoMoE` and `UoMoE-P2` derived from the two baselines, now available on every dataset and every reproduce script. Same recipe as the baselines (`optimizer=auto` → SGD@0.01, `lora_r=0`, `deterministic`, `seed 42`, `patience 0`); just pass `--model <name>`.
 
+<img width="1821" height="1090" alt="model_evolution" src="https://github.com/user-attachments/assets/648ea44c-460a-4190-870b-d79c1ad47b28" />
+
+
 ### How and Why they works?
 
+**Two independent levers on the tiny-object floor.** Both families attack the same failure mode — sub-8 px targets that a standard detector cannot recover — but from different angles. The **P2/stride-4 head** is a *spatial-resolution* fix (#98), and **UoMoE** (`UltraOptimizedMoE`) is a *feature/compute-allocation* fix (#126).
 
+#### Optimization 1: P2 — spatial resolution ([Issue #98](https://github.com/Tencent/YOLO-Master/issues/98))
 
+The stock head predicts on P3/P4/P5 (stride 8/16/32). Detection quality scales with an object's grid footprint, `footprint = object_px / stride`, so a 7 px object at 640 lands on ≈0.9 of a P3 cell and stays sub-grid — unlearnable no matter how good the features. Adding a stride-4 head halves the finest stride and doubles that footprint, moving tiny targets into the learnable regime. The P2 head is a pure neck/head extension (backbone untouched): the FPN top-down path is carried one level further to stride-4, the PAN bottom-up path is re-rooted at P2, and `Detect` becomes 4-level `(P2, P3, P4, P5)`.
+
+VisDrone, imgsz 640, 300 epochs, dense eval (`--no-sparse-eval`) for EsMoE models:
+
+| Model | Params | GFLOPs@640 | mAP50 | mAP50-95 | W&B Runs |
+|---|---|---|---|---|---|
+| EsMoE-N (baseline) | 2.69 M | 8.8 | 0.350 | 0.203 | [View](https://wandb.ai/yolo-master-reproduce/yolo-master-reproduce/runs/6rsdhsn9) |
+| **EsMoE-N-P2** | **2.81 M** (+4.4%) | **12.2** | **0.381 (+0.031)** | **0.225 (+0.022)** | [View](https://wandb.ai/yolo-master-reproduce/yolo-master-reproduce/runs/s44aqxgp) |
+| v0.1-N (baseline) | 7.52 M | 9.9 | 0.344 | 0.201 | [View](https://wandb.ai/yolo-master-reproduce/yolo-master-reproduce/runs/rbmyjy6b) | 
+| v0.1-N-P2 | 7.67 M | 14.7 | 0.369 (+0.025) | 0.218 (+0.017) | [View](https://wandb.ai/yolo-master-reproduce/yolo-master-reproduce/runs/qkf5d0je) |
+
+The per-class Δ is the textbook finer-head fingerprint — gains concentrate on the smallest classes and the largest class regresses slightly:
+
+| Class | Size | v0.1-N | v0.1-N-P2 | Δ | EsMoE-N | EsMoE-N-P2 | Δ |
+|---|---|---|---|---|---|---|---|
+| people | tiny |0.106 | 0.136 | +0.030 | 0.101 | 0.143 | **+0.042** |
+| pedestrian | tiny |0.160 | 0.198 | +0.038 | 0.165 | 0.203 | **+0.038** |
+| motor | tiny/small | 0.164 | 0.190 | +0.026 | 0.166 | 0.200 | **+0.034** |
+| car | small |0.533 | 0.566 | +0.033 | 0.538 | 0.572 | **+0.033** |
+| bus | medium |0.329 | 0.346 | +0.017 | 0.351 | 0.378 | **+0.027** |
+| bicycle | tiny/small |0.038 | 0.047 | +0.009 | 0.036 | 0.059 | **+0.022** |
+| awning-tricycle | tiny/small | 0.091 | 0.092 | +0.001 | 0.073 | 0.093 | **+0.021** |
+| van | small| 0.278 | 0.293 | +0.015 | 0.278 | 0.296 | **+0.018** |
+| tricycle | tiny/small |0.117 | 0.131 | +0.014 | 0.122 | 0.136 | **+0.014** |
+| truck | medium/large | 0.198 | 0.191 | −0.007 | 0.205 | 0.184 | **−0.021** |
+
+| Comparison | Visualization |
+| --- | --- |
+| Es-MoE-N-P2 vs EsMoE-N | <img width="2383" height="875" alt="Image" src="https://github.com/user-attachments/assets/d264c8f4-b2c2-4cb8-9bdc-c7881e77c940" /> |
+| v0.1-N-P2 vs v0.1-N | <img width="2383" height="875" alt="Image" src="https://github.com/user-attachments/assets/ce3aaf2c-a496-4296-9b33-3aba7beba27a" /> |
+
+Because imgsz and stride are *substitutes* (raising input resolution raises `object_px` proportionally), P2 is a low-resolution optimization: at 640 it clearly wins, but at 1280 the pixels already supply the footprint and the gain collapses to ~+0.8 mAP50. Evaluate and deploy at 640 (the real-time regime). Adding P2 also keeps the model firmly sub-S-tier — N→P2 costs +4.8 GFLOPs whereas N→S costs +24.8 GFLOPs (~1/5 of a scale-up), and it targets the tiny-object bottleneck that scaling up does not:
+
+| Model | Params | GFLOPs@640 | Stride-4 head? |
+|---|---|---|---|
+| **EsMoE-N-P2** | 2.8 M | **12.2** | ✅ |
+| v0.1-N-P2 | 7.7 M | 14.7 | ✅ |
+| YOLO11-S | 9.5 M | 21.7 | ✗ |
+| YOLO12-S | 9.3 M | 21.7 | ✗ |
+| YOLOv10-S | 8.1 M | 25.1 | ✗ |
+| YOLOv8-S | 11.2 M | 28.8 | ✗ |
+| YOLO-Master-S | 29.2 M | 34.7 | ✗ |
+
+#### Optimization2: UoMoE — feature/compute allocation ([Issue #126](https://github.com/Tencent/YOLO-Master/issues/126))
+
+Replacing v0.1-N's three `ModularRouterExpertMoE` blocks with `UltraOptimizedMoE` (backbone/head unchanged, identical `[out, num_experts, top_k]`) is a pure architecture win — neither more resolution nor more compute, just better routing of expert compute to densely-packed tiny-object regions, i.e. higher feature quality read out on the *same* grid.
+
+AI-TOD-v2 test split (14,018 imgs / 376,121 anns, 8 classes, mean object ~12 px; imgsz 800, 300 epochs):
+
+| model | params (M) | GFLOPs@800 | AP | AP50 | AP75 | AP_vt | AP_t | AP_s | AP_m | Weights | 
+|---|---|---|---|---|---|---|---|---|---|---|
+| v0.1-N | 7.52 | 14.65 | 11.0 | 27.0 | 6.7 | 3.6 | 10.9 | 14.6 | 19.1 | [Download](https://github.com/skywalker-lt/YOLO-Master/releases/download/v0.1.0/yolo-master-v01-n-aitodv2.pt) |
+| **UoMoE-N** | 7.42 | 14.61 | **20.6** | **47.0** | **14.5** | 5.9 | **18.9** | **28.0** | **35.1** | [Download](https://github.com/skywalker-lt/YOLO-Master/releases/download/v0.1.1/yolo-master-uomoe-n-aitodv2.pt) |
+| v0.1-P2-N | 7.60 | 20.95 | **21.4** | **48.6** | **15.0** | 7.8 | **21.1** | 27.2 | 32.7 | [Download](https://github.com/skywalker-lt/YOLO-Master/releases/download/v0.1.1/yolo-master-v01-p2-n-aitodv2.pt) |
+| UoMoE-P2-N | 7.50 | 20.91 | 21.1 | 47.8 | 14.7 | **8.6** | 20.4 | **27.6** | **33.8** | [Download](https://github.com/skywalker-lt/YOLO-Master/releases/download/v0.1.1/yolo-master-uomoe-p2-n-aitodv2.pt) |
+| YOLOv12-X | 59.3 | 185.4 | 16.1 | 33.5 | 13.4 | 5.4 | 17.0 | 21.4 | 28.5 | N/A |
+
+`UoMoE-N` jumps **+9.6 AP / +20.0 AP50** over `v0.1-N` at *fewer* params (7.42 vs 7.52 M) and iso-FLOPs (14.61 vs 14.65 GF).
+
+<img width="1300" height="845" alt="Image" src="https://github.com/user-attachments/assets/52991fcb-b5ae-4f9a-8560-23a556de4163" />
+
+**Based on the experiments above, v0.1-P2-N, UoMoE-N and UoMoE-P2-N are by far the only three real-time N-tier detectors which achieved ≥20% AP on the AI-TOD-v2 benchmark, outperforming YOLOv12-X by ~5 points AP with approx. 8~11% of its FLOPs.**
+
+#### How they interact - orthogonal on a weak base, substitutive on a strong one
+
+The two fixes target the *same* tiny-object bottleneck through different terms (P2 = sampling density, MoE = feature quality), so whether they compound depends on how much of that bottleneck the MoE has already closed:
+
+- **Weak base → they stack.** With ES-MoE (#98, VisDrone) P2 and MoE fix orthogonal gaps and add up: `EsMoE-N-P2` beats both the MoE-only and the P2-on-dense-backbone models (0.381 mAP50 at 2.8 M params / 12.2 GFLOPs).
+- **Strong base → P2 is largely redundant.** On AI-TOD-v2 (#126) P2 lifts the weak MoE (`v0.1-N`) by **+21.6 AP50** (27.0→48.6) but the strong `UoMoE-N` by only **+0.8** (47.0→47.8) — the stronger router has already resolved most of what the finer grid would have recovered. P2's residual value is confined entirely to the very-tiny (<8 px) bin (AP_vt 5.9→8.6, +2.7), making `UoMoE-P2-N` the best AP_vt of all four while flat elsewhere.
+
+**Practical takeaway.** `UoMoE-N` (no P2, 14.6 GF) lands within 1.6 AP50 of `v0.1-P2-N` (21.0 GF) — P2-variant-level accuracy at ~30% fewer FLOPs and no extra head. Pick `UoMoE-N` for the best accuracy/FLOPs trade-off; add P2 only when the <8 px bin is the priority.
+
+> **Reproducibility note:** `ultralytics.utils.torch_utils.get_flops` profiles an uninitialised `torch.empty` 32×32 input scaled ×625, which for input-dependent MoE triggers a different expert mix each call and makes identical runs report different GFLOPs (one UoMoE eval swung from 10.7 to 14.7). All FLOPs above are forced to a deterministic full-res measure.
 
 ### Model Specs
 
 | Name | Derived from | Params | Notes |
 |---|---|---|---|
-| `v0.1-P2-N` | `v0.1-N` + P2/4 head | 7.67M | tiny-object variant |
+| `v0.1-P2-N` | `v0.1-N` + P2/4 head | 7.60M | tiny-object variant |
 | `EsMoE-P2-N` | `EsMoE-N` + P2/4 head | 2.81M | tiny-object; **needs `--no-sparse-eval`** |
-| `UoMoE-N` | `v0.1-N`, MoE blocks → UltraOptimizedMoE | 7.45M | ~20–30% fewer GFLOPs at equal params |
-| `UoMoE-P2-N` | `UoMoE-N` + P2/4 head | 7.57M | UoMoE + tiny-object head |
+| `UoMoE-N` | `v0.1-N`, MoE blocks → UltraOptimizedMoE | 7.42M | ~20–30% fewer GFLOPs at equal params |
+| `UoMoE-P2-N` | `UoMoE-N` + P2/4 head | 7.50M | UoMoE + tiny-object head |
 
 > **`--no-sparse-eval`** matters only for `EsMoE-P2-N` (an ES_MOE model): its default sparse eval
 > collapses mAP, so pass the flag for correct dense evaluation. It is a no-op for the v0.1/UoMoE variants.
