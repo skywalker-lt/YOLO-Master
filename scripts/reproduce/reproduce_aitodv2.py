@@ -43,7 +43,7 @@ MODELS_AITOD = MODELS + (
     # replaced by UltraOptimizedMoE (shared expert -> stable, batched sparse compute + ultra-light
     # router -> ~20-30% fewer GFLOPs at equal params). Sparse train==eval, so uses_esmoe=False.
     ModelSpec("UoMoE-N", "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-uomoe.yaml", uses_esmoe=False),
-    ModelSpec("UoMoE-P2-N", "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-p2-uomoe.yaml", uses_esmoe=False),
+    ModelSpec("UoMoE-P2-N", "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-uomoe-p2.yaml", uses_esmoe=False),
 )
 
 DATASET = DatasetSpec(

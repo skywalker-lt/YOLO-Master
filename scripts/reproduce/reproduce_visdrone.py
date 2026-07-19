@@ -35,7 +35,7 @@ from _reproduce_common import MODELS, DatasetSpec, ModelSpec, run_dataset  # noq
 # uses_esmoe=False (--no-sparse-eval is a no-op for them).
 MODELS_VISDRONE = MODELS + (
     ModelSpec("UoMoE-N", "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-uomoe.yaml", uses_esmoe=False),
-    ModelSpec("UoMoE-P2-N", "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-p2-uomoe.yaml", uses_esmoe=False),
+    ModelSpec("UoMoE-P2-N", "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-uomoe-p2.yaml", uses_esmoe=False),
 )
 
 DATASET = DatasetSpec(

@@ -2,7 +2,7 @@
 #
 # Composes the three mixtures this project proved in isolation, at the P2/4 head:
 #   * UltraOptimizedMoE (UoMoE) backbone experts  — the only genuinely-sparse mixture (shared expert
-#     always on + batched top-k dispatch); same as yolo-master-n-p2-uomoe.yaml.
+#     always on + batched top-k dispatch); same as yolo-master-n-uomoe-p2.yaml.
 #   * MoASparseP2 at the P2/4 detect block (layer 20, was C3k2[128]) — a UoMoE-fed P2 feature gated by
 #     a MoA spatial router. Trains dense (soft per-cell gate, router learns which cells matter with no GT
 #     density labels). At EVAL it defaults to DENSE (use_sparse_p2=False) — THIS config IS the

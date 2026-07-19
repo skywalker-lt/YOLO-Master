@@ -65,7 +65,7 @@ MODELS = {
     "v0.1-N":     {"cfg": "ultralytics/cfg/models/master/v0_1/det/yolo-master-n.yaml",         "esmoe": False},
     "EsMoE-N":    {"cfg": "ultralytics/cfg/models/master/v0/det/yolo-master-n.yaml",            "esmoe": True},
     "UoMoE-N":    {"cfg": "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-uomoe.yaml",    "esmoe": False},
-    "UoMoE-P2-N": {"cfg": "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-p2-uomoe.yaml", "esmoe": False},
+    "UoMoE-P2-N": {"cfg": "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-uomoe-p2.yaml", "esmoe": False},
     "EsMoE-P2-N": {"cfg": "ultralytics/cfg/models/master/v0/det/yolo-master-n-p2.yaml",         "esmoe": True},
     "v0.1-P2-N":  {"cfg": "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-p2.yaml",       "esmoe": False},
 }
