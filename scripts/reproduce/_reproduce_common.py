@@ -268,7 +268,8 @@ def _completed_epoch(run_dir: Path) -> int | None:
         return None
 
 
-def train_one(args: argparse.Namespace, dataset: DatasetSpec, spec: ModelSpec, project: Path) -> dict:
+def train_one(args: argparse.Namespace, dataset: DatasetSpec, spec: ModelSpec, project: Path,
+              overrides: dict | None = None) -> dict:
     from ultralytics import YOLO
 
     run_name = f"{dataset.name}_{spec.name}"
@@ -339,6 +340,10 @@ def train_one(args: argparse.Namespace, dataset: DatasetSpec, spec: ModelSpec, p
         amp=args.amp,
         resume=resume,
         verbose=args.verbose,
+        # Per-dataset protocol pins, applied LAST so they beat default.yaml. Needed because
+        # default.yaml is tuned for the paper's LoRA/MoLoRA experiments, not for published
+        # baselines: e.g. it ships cos_lr=True while the released COCO runs used cos_lr=False.
+        **(overrides or {}),
     )
     return {"model": spec.name, "status": "resumed" if resume else "ok",
             "duration_s": f"{time.time() - start:.1f}"}
@@ -395,7 +400,7 @@ def build_parser(dataset: DatasetSpec, models=MODELS) -> argparse.ArgumentParser
     return p
 
 
-def run_dataset(dataset: DatasetSpec, models=MODELS) -> int:
+def run_dataset(dataset: DatasetSpec, models=MODELS, overrides: dict | None = None) -> int:
     """Entry point used by the per-dataset scripts."""
     args = build_parser(dataset, models).parse_args()
     project = Path(args.project) if Path(args.project).is_absolute() else ROOT / args.project
@@ -426,7 +431,7 @@ def run_dataset(dataset: DatasetSpec, models=MODELS) -> int:
     statuses = []
     for s in specs:
         try:
-            statuses.append(train_one(args, dataset, s, project))
+            statuses.append(train_one(args, dataset, s, project, overrides))
         except Exception as exc:  # noqa: BLE001
             print(f"[fail] {s.name}: {type(exc).__name__}: {exc}", flush=True)
             traceback.print_exc()
