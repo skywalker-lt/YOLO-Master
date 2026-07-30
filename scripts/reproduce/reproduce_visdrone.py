@@ -27,16 +27,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _reproduce_common import MODELS, DatasetSpec, ModelSpec, run_dataset  # noqa: E402
+from _reproduce_common import MODELS, VARIANTS, DatasetSpec, run_dataset  # noqa: E402
 
-# The shared two baselines plus the UltraOptimizedMoE swaps (v0.1 backbone/head with
-# the ModularRouterExpertMoE blocks replaced by UltraOptimizedMoE -- stable shared
-# expert, batched sparse compute, ultra-light router). Sparse train==eval, so
-# uses_esmoe=False (--no-sparse-eval is a no-op for them).
-MODELS_VISDRONE = MODELS + (
-    ModelSpec("UoMoE-N", "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-uomoe.yaml", uses_esmoe=False),
-    ModelSpec("UoMoE-P2-N", "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-uomoe-p2.yaml", uses_esmoe=False),
-)
+# The two shared baselines plus the four shared variants (P2/4-head + UltraOptimizedMoE
+# swaps -- see _reproduce_common.VARIANTS). Full, consistent model set across datasets.
+MODELS_VISDRONE = MODELS + VARIANTS
 
 DATASET = DatasetSpec(
     name="VisDrone",

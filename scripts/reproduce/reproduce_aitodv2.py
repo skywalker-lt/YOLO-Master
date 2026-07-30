@@ -29,22 +29,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _reproduce_common import DatasetSpec, ModelSpec, MODELS, run_dataset  # noqa: E402
+from _reproduce_common import MODELS, VARIANTS, DatasetSpec, run_dataset  # noqa: E402
 
-# The shared two baselines plus the AI-TOD tiny-object variants.
-MODELS_AITOD = MODELS + (
-    # EsMoE-P2-N: ES_MOE base + P2/4 head. uses_esmoe=True -> --no-sparse-eval gives it the
-    # corrected dense evaluation too (else its sparse-eval mAP collapses like EsMoE-N).
-    ModelSpec("EsMoE-P2-N", "ultralytics/cfg/models/master/v0/det/yolo-master-n-p2.yaml", uses_esmoe=True),
-    # v0.1 base (stable OptimizedMOEImproved) + P2/4 head -> tiny-object variant, no ES_MOE
-    # routing collapse. uses_esmoe=False (train==eval consistent; --no-sparse-eval is a no-op).
-    ModelSpec("v0.1-P2-N", "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-p2.yaml", uses_esmoe=False),
-    # UltraOptimizedMoE swaps: v0.1 backbone/head with the 3 ModularRouterExpertMoE blocks
-    # replaced by UltraOptimizedMoE (shared expert -> stable, batched sparse compute + ultra-light
-    # router -> ~20-30% fewer GFLOPs at equal params). Sparse train==eval, so uses_esmoe=False.
-    ModelSpec("UoMoE-N", "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-uomoe.yaml", uses_esmoe=False),
-    ModelSpec("UoMoE-P2-N", "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-uomoe-p2.yaml", uses_esmoe=False),
-)
+# The two shared baselines plus the four shared variants (P2/4-head + UltraOptimizedMoE
+# swaps -- see _reproduce_common.VARIANTS). The P2 variants are the tiny-object heads that
+# matter most on AI-TOD-v2. EsMoE-P2-N is uses_esmoe=True, so --no-sparse-eval gives it the
+# corrected dense evaluation too (else its sparse-eval mAP collapses like EsMoE-N).
+MODELS_AITOD = MODELS + VARIANTS
 
 DATASET = DatasetSpec(
     name="AI-TOD-v2",
