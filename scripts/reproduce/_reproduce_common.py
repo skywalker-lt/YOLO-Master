@@ -329,8 +329,11 @@ def train_one(args: argparse.Namespace, dataset: DatasetSpec, spec: ModelSpec, p
         pretrained=False,
         lora_r=0,  # full from-scratch baseline: repo default.yaml ships lora_r=16, which would
                    # silently LoRA-fy the run (train ~24% of params). r=0 disables LoRA (apply_lora no-op).
-        es_moe_dense_eval=dense_eval,  # ES_MOE dense eval (--no-sparse-eval). Library-applied via this
-                                       # serialized arg so it survives DDP auto-spawn (workers get it).
+        # ES_MOE dense eval (--no-sparse-eval). Library-applied via this serialized arg so it
+        # survives DDP auto-spawn (workers get it). Only sent when actually enabled: it is a
+        # fork-specific arg, and older/stock ultralytics rejects unknown keys outright
+        # ("'es_moe_dense_eval' is not a valid YOLO argument"). Models without ES_MOE never need it.
+        **({"es_moe_dense_eval": True} if dense_eval else {}),
         **opt,  # optimizer (default 'auto' -> SGD@0.01) + optional --lr0 override (built above). We never
                 # rely on default.yaml's optimizer (drifted to AdamW@0.01, 10x too high; NaN'd AI-TOD).
         val=True,
