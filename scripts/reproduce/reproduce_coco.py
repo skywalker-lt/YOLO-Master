@@ -61,10 +61,12 @@ which is 10x too high and NaN'd the AI-TOD baselines.
 
 Cost
 ----
-700 epochs x 118,287 images = ~83M image-passes. On 8xA100 expect roughly 40-45 h
-per model (~$500 at $12/h); nano YOLO training is usually CPU-bound on mosaic, so provision vCPUs,
-not just GPUs (`workers` is auto-set below to cpu_count // n_gpus, which is also
-the ceiling `build_dataloader` enforces).
+700 epochs x 118,287 images = ~83M image-passes. MEASURED on 8xA100 (128 vCPU,
+batch 256, workers 16/rank): 131.8 s/epoch including validation -> ~25.6 h per
+model, ~$310 at $12/h. GPU util sat at 63-80%, i.e. mildly dataloader-bound but
+not starved -- nano YOLO training is usually CPU-bound on mosaic, so provision
+vCPUs, not just GPUs (`workers` is auto-set below to cpu_count // n_gpus, which
+is also the ceiling `build_dataloader` enforces).
 
 Calibrate before committing: run 3 epochs, take the SECOND or third epoch time
 (the first includes the label-cache scan), multiply by 700. Watch nvidia-smi -- if
