@@ -937,13 +937,45 @@ class OptimizedMOEImproved(nn.Module):
         else:
             self._current_top_k = self.top_k
 
+    def _ensure_compat_attrs(self):
+        """One-time legacy checkpoint attribute repair (mirrors ES_MOE._ensure_compat_attrs).
+
+        Ultralytics checkpoints pickle the module OBJECT, so a .pt written before an
+        attribute was introduced unpickles without it while binding to today's class --
+        and today's ``forward`` reads several instance attributes unconditionally, on the
+        inference path as well as the training one. The released YOLO-Master-v0.1-N.pt
+        predates the progressive-sparsity block, so plain eval on it died with
+        "'OptimizedMOEImproved' object has no attribute '_training_step'".
+
+        Defaults match ``__init__``. They only affect training dynamics (progressive
+        sparsity restarts its warmup, expert dropout re-arms); inference is unchanged,
+        since every consumer of these values is gated on ``self.training``.
+        """
+        if not hasattr(self, "_training_step"):
+            self._training_step = 0
+        if not hasattr(self, "progressive_sparsity"):
+            self.progressive_sparsity = True
+        if not hasattr(self, "_current_top_k"):
+            self._current_top_k = getattr(self, "num_experts", len(getattr(self, "experts", [])) or 1)
+        if not hasattr(self, "warmup_steps"):
+            self.warmup_steps = 5000
+        if not hasattr(self, "expert_dropout_rate"):
+            self.expert_dropout_rate = 0.15
+        if not hasattr(self, "dropout_interval"):
+            self.dropout_interval = 100
+        if not hasattr(self, "add_residual"):
+            self.add_residual = True
+        if not hasattr(self, "detach_routing"):
+            self.detach_routing = False
+
     def forward(self, x):
+        self._ensure_compat_attrs()
         B, C, H, W = x.shape
 
         if self.training and self.progressive_sparsity:
             self._update_sparsity()
             self._training_step += 1
-            
+
         # Use current_top_k for routing
         adaptive_top_k = self._current_top_k if self.training and self.progressive_sparsity else self.top_k
 
