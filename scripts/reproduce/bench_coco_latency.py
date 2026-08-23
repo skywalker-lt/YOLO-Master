@@ -174,6 +174,9 @@ def _bench_one(label, weights, imgs, a, dev):
     st = _stats(t)
     return {"model": label, "weights": str(weights), "nc": nc, "params_M": round(n_params, 3),
             "gflops": round(gflops, 2), **{k: round(v, 4) for k, v in st.items()},
+            # "mean" is per FORWARD CALL, i.e. per batch. ms_img is the cross-batch-size
+            # comparable figure; only at batch=1 are the two equal.
+            "ms_img": round(st["mean"] / a.batch, 4),
             "fps": round(1000.0 * a.batch / st["mean"], 1)}
 
 
@@ -233,17 +236,20 @@ def main() -> int:
         r.update(gpu=gpu, precision=prec, imgsz=a.imgsz, batch=a.batch, n_imgs=int(imgs.shape[0]))
         rows.append(r)
         print(f"[{r['model']}] params={r['params_M']}M  GFLOPs={r['gflops']}  nc={r['nc']}\n"
-              f"    ms  mean={r['mean']:.3f}  median={r['median']:.3f}  std={r['std']:.3f}  "
+              f"    ms/call mean={r['mean']:.3f}  median={r['median']:.3f}  std={r['std']:.3f}  "
               f"min={r['min']:.3f}  p90={r['p90']:.3f}  p99={r['p99']:.3f}\n"
-              f"    {r['fps']:.1f} img/s\n")
+              f"    {r['ms_img']:.4f} ms/img   {r['fps']:.1f} img/s\n")
 
     if rows:
         w = max(len(r["model"]) for r in rows)
-        print(f"\n{'model'.ljust(w)} | params M | GFLOPs | mean ms | median ms | p99 ms |   FPS")
-        print(f"{'-' * w}-+----------+--------+---------+-----------+--------+------")
+        # ms/call is per FORWARD, i.e. per BATCH. Only at batch=1 does ms x FPS = 1000;
+        # the per-image column is the one to compare across different --batch settings.
+        print(f"\n{'model'.ljust(w)} | params M | GFLOPs | ms/call | ms/img | p99 ms |   img/s")
+        print(f"{'-' * w}-+----------+--------+---------+--------+--------+--------")
         for r in rows:
             print(f"{r['model'].ljust(w)} | {r['params_M']:>8.3f} | {r['gflops']:>6.2f} | "
-                  f"{r['mean']:>7.3f} | {r['median']:>9.3f} | {r['p99']:>6.3f} | {r['fps']:>5.1f}")
+                  f"{r['mean']:>7.3f} | {r['ms_img']:>6.3f} | {r['p99']:>6.3f} | {r['fps']:>7.1f}")
+        print(f"(ms/call is per forward of batch={a.batch}; ms/img = ms/call / {a.batch})")
         base = rows[0]
         print(f"\nrelative to {base['model']} (mean ms):")
         for r in rows[1:]:
