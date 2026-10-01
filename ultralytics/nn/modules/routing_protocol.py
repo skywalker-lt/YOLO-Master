@@ -213,8 +213,12 @@ def publish_aux_loss(
     Publishers are responsible for calling this helper only for training
     forwards; ``training`` is retained as record metadata for compatibility
     with legacy publishers.  A module may publish at most once per canonical
-    step: a duplicate keeps the first record and increments the module-local
-    duplicate counter, so a retry cannot silently add a second loss weight.
+    step *after a collector consumed that step*: such a duplicate keeps the
+    consumed record and increments the module-local duplicate counter, so a
+    retry cannot silently add a second loss weight.  An unconsumed same-step
+    record is simply replaced, so a publisher that forwards twice before any
+    collection (an eager double forward) never hands out a tensor whose graph
+    was already freed by ``backward()``.
     """
 
     if not isinstance(value, torch.Tensor):
@@ -231,11 +235,12 @@ def publish_aux_loss(
     with _RECORDS_LOCK:
         previous = _RECORDS.get(module)
         consumed = _CONSUMED_RECORDS.setdefault(module, set())
-        duplicate = (record.step, record.kind) in consumed or (previous is not None and previous.step == record.step)
+        duplicate = (record.step, record.kind) in consumed
         if duplicate:
-            # A module may publish at most once per canonical step. Keep the
-            # first graph-connected record so a same-step re-publication cannot
-            # silently receive a second loss weight.
+            # A module may publish at most once per consumed canonical step.
+            # Keep the consumed record so a same-step re-publication cannot
+            # silently receive a second loss weight; an unconsumed record is
+            # replaced below (a freed graph must never be returned).
             module._routing_duplicate_publication_count = getattr(module, "_routing_duplicate_publication_count", 0) + 1
             return previous.value if previous is not None else canonical
         _RECORDS[module] = record

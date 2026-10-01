@@ -262,7 +262,8 @@ class Detect(nn.Module):
         scores, index = scores.flatten(1).topk(k)
         # NOTE: torch.gather 与高级索引语义等价，但 ONNX 有原生 GatherElements 对应，
         # 避免 aten::index 在导出时被拼装为不等价算子组合（torch 2.5.1 + onnx 1.22.0 下坐标列错位）
-        idx = torch.gather(ori_index, 1, (index // nc).unsqueeze(-1))  # original index
+        # explicit integer index: coremltools lowers `//` to fp32 and gather_along_axis requires int32
+        idx = torch.gather(ori_index, 1, (index // nc).unsqueeze(-1).long())  # original index
         return scores[..., None], (index % nc)[..., None].float(), idx
 
     def fuse(self) -> None:

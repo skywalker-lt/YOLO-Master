@@ -17,6 +17,7 @@ from ultralytics.nn.modules.moa.moa import (
     _window_flash_attn,
 )
 from ultralytics.nn.modules.moa.heads import _window_partition_2d, _window_unpartition_2d
+from ultralytics.nn.modules.routing_protocol import clear_aux_records
 from ultralytics.nn.modules._numeric import fp_clamp_floor as _fp_min
 from ultralytics.nn.tasks import DetectionModel
 from ultralytics.utils.loss import _collect_moa_aux_loss
@@ -138,7 +139,6 @@ def test_c2fmoa_aux_loss_not_double_counted_for_nested_blocks():
 
     inner_sum = torch.stack([m.last_aux_loss for m in module.m]).sum()
     collected = collect_moa_aux_loss(module)
-    loss_collector = _collect_moa_aux_loss(module, torch.device("cpu"))
     naive_sum = torch.stack(
         [m.last_aux_loss for m in module.modules() if isinstance(getattr(m, "last_aux_loss", None), torch.Tensor)]
     ).sum()
@@ -146,8 +146,13 @@ def test_c2fmoa_aux_loss_not_double_counted_for_nested_blocks():
     assert inner_sum.requires_grad and torch.isfinite(inner_sum)
     assert torch.allclose(module.last_aux_loss, inner_sum)
     assert torch.allclose(collected, inner_sum)
-    assert torch.allclose(loss_collector, inner_sum)
     assert naive_sum > collected * 1.5
+
+    # collectors consume the current-step record once: a second collector needs a fresh step and forward
+    clear_aux_records()
+    module(torch.randn(2, 32, 6, 6))
+    loss_collector = _collect_moa_aux_loss(module, torch.device("cpu"))
+    assert torch.allclose(loss_collector, module.last_aux_loss)
 
 
 def test_flash_attn_supports_sdpa_without_scale_keyword(monkeypatch):
@@ -178,6 +183,8 @@ def test_moa_aux_loss_collected_for_c2f_and_neck():
     aux = collect_moa_aux_loss(c2f)
     assert out.shape == (2, 32, 6, 6)
     assert aux.requires_grad and torch.isfinite(aux)
+    clear_aux_records()  # the step above was consumed by collect_moa_aux_loss
+    c2f(torch.randn(2, 32, 6, 6))
     assert _collect_moa_aux_loss(c2f, torch.device("cpu")).requires_grad
 
     neck = NeckMoAFusion(32, 64, 32, num_heads=2).train()
@@ -193,14 +200,18 @@ def test_c2fmoa_aux_loss_does_not_double_count_nested_blocks():
 
     block_total = sum((m.last_aux_loss for m in module.m), module.last_aux_loss.new_zeros(()))
     collected = collect_moa_aux_loss(module)
-    collected_via_loss = _collect_moa_aux_loss(module, torch.device("cpu"))
     legacy_recursive_total = module.last_aux_loss + block_total
 
     assert module.last_aux_loss.requires_grad
     assert torch.allclose(module.last_aux_loss, block_total)
     assert torch.allclose(collected, module.last_aux_loss)
-    assert torch.allclose(collected_via_loss, module.last_aux_loss)
     assert legacy_recursive_total > collected * 1.5
+
+    # a second collector on the same consumed step would read a zero; collect again on a fresh step
+    clear_aux_records()
+    module(torch.randn(2, 32, 6, 6))
+    collected_via_loss = _collect_moa_aux_loss(module, torch.device("cpu"))
+    assert torch.allclose(collected_via_loss, module.last_aux_loss)
 
 
 def test_c2fmoa_small_channels_keep_valid_head_count():
