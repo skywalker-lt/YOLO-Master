@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Clean, tail-friendly log of the three runs: one progress line per run every minute, one line per completed epoch.
-# Writes /data/runs80/train.log (pod) and mirrors it to /training_data/logs/runs80.log (shared volume).
+# Writes /data/$PROJECT/train.log (pod) and mirrors it to /training_data/logs/$PROJECT.log (shared volume); PROJECT and RUNS from the environment.
 #   tail -F /data/runs80/train.log          # on the pod
 #   tail -F /training_data/logs/runs80.log  # from any pod with the shared volume
-LOCAL=/data/runs80/train.log; SHARED=/training_data/logs/runs80.log; mkdir -p /data/runs80 /training_data/logs
+PROJECT=${PROJECT:-runs80}; LOCAL=/data/$PROJECT/train.log; SHARED=/training_data/logs/$PROJECT.log; mkdir -p /data/$PROJECT /training_data/logs
 RUNS=${RUNS:-"dense80 top180 pair680"}; declare -A DONE LASTERR DEAD
 log() { echo "$(date -u +%FT%TZ) $*" >> $LOCAL; }
 log "monitor started (runs: $RUNS)"
 while true; do
   for n in $RUNS; do
-    out=/data/runs80/$n.out; [ -f $out ] || continue
+    out=/data/$PROJECT/$n.out; [ -f $out ] || continue
     line=$(tail -c 4000 $out | tr '\r' '\n' | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | grep -a -E "^ +[0-9]+/[0-9]+ " | tail -1)
     if [ -n "$line" ]; then
       ep=$(echo "$line" | awk '{print $1}'); box=$(echo "$line" | awk '{print $3}'); cls=$(echo "$line" | awk '{print $4}')
@@ -18,7 +18,7 @@ while true; do
     fi
     err=$(tail -c 20000 $out | tr '\r' '\n' | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | grep -a -E "Traceback|Error|BACKUP" | tail -1)
     [ -n "$err" ] && [ "${LASTERR[$n]:-}" != "$err" ] && { log "$n NOTE: $err"; LASTERR[$n]="$err"; }
-    csv=/data/runs80/$n/results.csv
+    csv=/data/$PROJECT/$n/results.csv
     if [ -f $csv ]; then
       rows=$(( $(wc -l < $csv) - 1 ))
       if [ "$rows" != "${DONE[$n]:-0}" ]; then

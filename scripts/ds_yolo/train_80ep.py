@@ -4,7 +4,8 @@ Rules: cache=disk under the pod's local /data; a copy of weights/last.pt, weight
 /training_data/<project>/<name>/ every 10 epochs and at the end; on launch the run resumes from the local last.pt, else from
 the backup on /training_data, else starts fresh. --mem-fraction caps this process's share of GPU memory so that several
 runs can share one GPU without one of them failing when their validation phases coincide.
-usage: python train_80ep.py --model <yaml or .pt> --name <run> [--pretrained <ckpt>] [--epochs 80] [--extra k=v ...]"""
+usage: python train_80ep.py --model <yaml or .pt> --name <run> [--pretrained <ckpt>] [--epochs 80] [--project runs80]
+       [--scales 512,768] [--freeze-stem 6] [--mem-fraction 0.31] [--extra k=v ...]"""
 
 import argparse
 import os
@@ -18,7 +19,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # 
 
 from ultralytics import YOLO  # noqa: E402
 
-LOCAL = Path("/data/runs80")
+LOCAL = Path("/data/runs80")  # replaced by --project
 BACKUP = Path("/training_data/runs80")
 RECIPE = str(Path(__file__).with_name("recipe_yolo26m_stage2.yaml"))
 
@@ -56,11 +57,17 @@ if __name__ == "__main__":
     ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--every", type=int, default=10)
+    ap.add_argument("--project", default="runs80", help="run directory under /data (backups under /training_data)")
+    ap.add_argument(
+        "--scales", default=None, help="comma-separated sizes, e.g. 512,768: every batch is resized to one of them at random"
+    )
+    ap.add_argument("--freeze-stem", type=int, default=0, help="freeze layers 0..N-1 (weights and batch-norm stats)")
     ap.add_argument(
         "--mem-fraction", type=float, default=0.0, help="cap on this process's share of GPU 0 memory (0 = none)"
     )
     ap.add_argument("--extra", nargs="*", default=[])
     a = ap.parse_args()
+    LOCAL, BACKUP = Path("/data") / a.project, Path("/training_data") / a.project
     if a.mem_fraction > 0:
         import torch
 
@@ -100,6 +107,8 @@ if __name__ == "__main__":
     )
     if a.pretrained:
         args["pretrained"] = a.pretrained
+    if a.freeze_stem:
+        args["freeze"] = list(range(a.freeze_stem))
     for kv in a.extra:
         k, v = kv.split("=", 1)
         args[k] = yaml.safe_load(v)
@@ -111,6 +120,30 @@ if __name__ == "__main__":
     def on_train_end(trainer):
         backup_run(Path(trainer.save_dir), a.name, "final")
 
+    def on_train_start(trainer):
+        if a.scales:  # two-scale training: the same interpolation the trainer's multi_scale option uses, at fixed sizes
+            import random
+
+            from torch.nn import functional as F
+
+            sizes = [int(v) for v in a.scales.split(",")]
+            original = trainer.preprocess_batch
+
+            def preprocess_batch(batch):
+                batch = original(batch)
+                sz = random.choice(sizes)
+                if sz != batch["img"].shape[-1]:
+                    batch["img"] = F.interpolate(batch["img"], size=(sz, sz), mode="bilinear", align_corners=False)
+                return batch
+
+            trainer.preprocess_batch = preprocess_batch
+            print(f"TWO-SCALE {sizes}", flush=True)
+
+    def on_train_batch_start(trainer):
+        if a.freeze_stem:  # the trainer freezes the weights; the batch-norm statistics stay frozen too
+            for layer in list(trainer.model.model)[: a.freeze_stem]:
+                layer.eval()
+
     if local_last.exists():
         print(f"RESUME {a.name} from {local_last}", flush=True)
         model = YOLO(str(local_last))
@@ -121,4 +154,6 @@ if __name__ == "__main__":
         train_args = args
     model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
     model.add_callback("on_train_end", on_train_end)
+    model.add_callback("on_train_start", on_train_start)
+    model.add_callback("on_train_batch_start", on_train_batch_start)
     model.train(**train_args)
