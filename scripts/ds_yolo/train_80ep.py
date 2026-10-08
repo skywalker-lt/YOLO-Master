@@ -20,22 +20,27 @@ RECIPE = str(Path(__file__).with_name("recipe_yolo26m_stage2.yaml"))
 
 
 def backup_run(run_dir: Path, name: str, tag: str):
-    dst = BACKUP / name
-    tmp = BACKUP / f".{name}.tmp"
-    shutil.rmtree(tmp, ignore_errors=True)
-    (tmp / "weights").mkdir(parents=True)
-    for rel in ("weights/last.pt", "weights/best.pt", "results.csv", "args.yaml"):
-        src = run_dir / rel
-        if src.exists():
-            shutil.copy2(src, tmp / rel)
-    (tmp / "BACKUP_INFO").write_text(f"{tag} {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n")
-    old = BACKUP / f".{name}.old"
-    shutil.rmtree(old, ignore_errors=True)
-    if dst.exists():
-        dst.rename(old)
-    tmp.rename(dst)
-    shutil.rmtree(old, ignore_errors=True)
-    print(f"BACKUP {name}: {tag} -> {dst}", flush=True)
+    """Copy the run's checkpoints and logs to the shared volume. File contents only (the volume refuses metadata
+    changes), and never raises: a failed backup is logged, training continues."""
+    try:
+        dst = BACKUP / name
+        tmp = BACKUP / f".{name}.tmp"
+        shutil.rmtree(tmp, ignore_errors=True)
+        (tmp / "weights").mkdir(parents=True)
+        for rel in ("weights/last.pt", "weights/best.pt", "results.csv", "args.yaml"):
+            src = run_dir / rel
+            if src.exists():
+                shutil.copyfile(src, tmp / rel)
+        (tmp / "BACKUP_INFO").write_text(f"{tag} {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n")
+        old = BACKUP / f".{name}.old"
+        shutil.rmtree(old, ignore_errors=True)
+        if dst.exists():
+            dst.rename(old)
+        tmp.rename(dst)
+        shutil.rmtree(old, ignore_errors=True)
+        print(f"BACKUP {name}: {tag} -> {dst}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"BACKUP FAILED {name}: {tag}: {type(exc).__name__}: {exc}", flush=True)
 
 
 if __name__ == "__main__":
@@ -56,7 +61,7 @@ if __name__ == "__main__":
         not local_last.exists() and backup_last.exists()
     ):  # restore the backup into the local run dir, then resume from it
         shutil.rmtree(run_dir, ignore_errors=True)
-        shutil.copytree(BACKUP / a.name, run_dir)
+        shutil.copytree(BACKUP / a.name, run_dir, copy_function=shutil.copyfile)
         print(
             f"RESTORED {a.name} from {BACKUP / a.name} ({(BACKUP / a.name / 'BACKUP_INFO').read_text().strip()})",
             flush=True,
