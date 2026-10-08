@@ -495,6 +495,22 @@ def _initialize_yolo_model(model, cfg, ch, nc, verbose):
         LOGGER.info(f"Overriding model.yaml nc={model.yaml['nc']} with nc={nc}")
         model.yaml["nc"] = nc  # override YAML value
     model.model, model.save = parse_model(deepcopy(model.yaml), ch=ch, verbose=verbose)  # model, savelist
+    bank = model.yaml.get("weight_bank")
+    if bank:  # per-image weight-bank routing of the 1x1 convolutions in a layer range
+        from ultralytics.nn.modules.moe.weight_bank import convert_to_weight_bank
+
+        first, last = bank["layers"]
+        convert_to_weight_bank(
+            model.model,
+            first,
+            last,
+            experts=bank.get("experts", 4),
+            top_k=bank.get("top_k", 2),
+            hidden=bank.get("hidden", 64),
+            eps=bank.get("eps", 0.0),
+            hard=bank.get("hard", False),
+            router_fixed=bank.get("router_fixed", False),
+        )
     model.names = {i: f"{i}" for i in range(model.yaml["nc"])}  # default names dict
     model.inplace = model.yaml.get("inplace", True)
 

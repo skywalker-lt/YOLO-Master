@@ -406,6 +406,10 @@ class BaseTrainer:
         )
         self.accumulate = max(round(self.args.nbs / self.batch_size), 1)  # accumulate loss before optimizing
         weight_decay = self.args.weight_decay * self.batch_size * self.accumulate / self.args.nbs  # scale weight_decay
+        # Optional decay for the router group, scaled like weight_decay; unset keeps the router group at weight_decay.
+        router_weight_decay = getattr(self.args, "moe_router_weight_decay", None)
+        if router_weight_decay is not None:
+            router_weight_decay = float(router_weight_decay) * self.batch_size * self.accumulate / self.args.nbs
         # A custom batch sampler may intentionally use a different effective
         # epoch length than the underlying dataset (weighted multi-source runs).
         # Use its scheduled steps for optimizer/adapter warmup and decay.
@@ -423,6 +427,7 @@ class BaseTrainer:
             momentum=self.args.momentum,
             decay=weight_decay,
             iterations=iterations,
+            router_decay=router_weight_decay,
         )
         self.adapter_controller.configure_optimizer(self.optimizer)
         self.args.effective_optimizer = type(self.optimizer).__name__
@@ -1045,7 +1050,11 @@ class BaseTrainer:
             parameter.grad for parameter in self.model.parameters() if parameter.grad is not None
         )
         if self._sync_nonfinite_flag(local_nonfinite):
-            self._gradient_nonfinite = True
+            # Under AMP a non-finite gradient is the scaler's normal overflow signal: skip the step and let the scaler
+            # lower its scale. Only without AMP does it mean the training state itself has gone non-finite, which the
+            # epoch-end recovery then restores from the healthy checkpoint.
+            if not bool(getattr(self, "amp", False)):
+                self._gradient_nonfinite = True
             self.optimizer.zero_grad()
             self.scaler.update()
             return False
@@ -1566,7 +1575,9 @@ class BaseTrainer:
             LOGGER.info("Closing dataloader mosaic")
             self.train_loader.dataset.close_mosaic(hyp=copy(self.args))
 
-    def build_optimizer(self, model, name="auto", lr=0.001, momentum=0.9, decay=1e-5, iterations=1e5):
+    def build_optimizer(
+        self, model, name="auto", lr=0.001, momentum=0.9, decay=1e-5, iterations=1e5, router_decay=None
+    ):
         """Construct an optimizer for the given model.
 
         Args:
@@ -1577,6 +1588,8 @@ class BaseTrainer:
             momentum (float, optional): The momentum factor for the optimizer.
             decay (float, optional): The weight decay for the optimizer.
             iterations (float, optional): The number of iterations, which determines the optimizer if name is 'auto'.
+            router_decay (float, optional): Weight decay for the router parameter group (parameters named
+                routing/router). None keeps the router group at `decay`, the behaviour before this argument existed.
 
         Returns:
             (torch.optim.Optimizer): The constructed optimizer.
@@ -1679,7 +1692,7 @@ class BaseTrainer:
             "params": g[router_index],
             **optim_args,
             "lr": lr * router_lr_scale,
-            "weight_decay": decay,
+            "weight_decay": decay if router_decay is None else router_decay,
             "param_group": "router",
         }
         g[adapter_index] = {
@@ -1710,7 +1723,8 @@ class BaseTrainer:
         LOGGER.info(
             f"{colorstr('optimizer:')} {type(optimizer).__name__}(lr={lr}, momentum={momentum}) with parameter groups "
             f"{num_params[1]} weight(decay=0.0), {num_params[0]} weight(decay={decay}), "
-            f"{num_params[2]} bias(decay=0.0), {num_params[3]} router(lr={router_lr_scale:g}x), "
+            f"{num_params[2]} bias(decay=0.0), {num_params[3]} router(lr={router_lr_scale:g}x, "
+            f"decay={decay if router_decay is None else router_decay}), "
             f"{num_params[4]} adapter(lr={adapter_lr_mult:g}x)"
         )
         return optimizer
