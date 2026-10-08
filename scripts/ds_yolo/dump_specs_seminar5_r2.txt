@@ -1,0 +1,10 @@
+# seminar 5, between rounds 1 and 2: public scales (agents 1, 7) and one-to-many heads (agent 8)
+yolo26m_448 /data/weights/yolo26m.pt 448 o2o
+yolo26m_576 /data/weights/yolo26m.pt 576 o2o
+yolo26m_608 /data/weights/yolo26m.pt 608 o2o
+yolo26l_448 /data/weights/yolo26l.pt 448 o2o
+yolo26l_512 /data/weights/yolo26l.pt 512 o2o
+yolo26l_576 /data/weights/yolo26l.pt 576 o2o
+yolo26m_640_o2m /data/weights/yolo26m.pt 640 o2m
+splice10_last_640_o2m /data/runs_receipts/splice10/weights/last.pt 640 o2m
+twoscale20_last_768_o2m /data/runs_receipts/twoscale20/weights/last.pt 768 o2m
