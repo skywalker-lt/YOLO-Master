@@ -57,10 +57,8 @@ if __name__ == "__main__":
     ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--every", type=int, default=10)
-    ap.add_argument("--project", default="runs80", help="run directory under /data (backups under /training_data)")
-    ap.add_argument(
-        "--scales", default=None, help="comma-separated sizes, e.g. 512,768: every batch is resized to one of them at random"
-    )
+    ap.add_argument("--project", default="runs80", help="run directory under /data, backups under /training_data")
+    ap.add_argument("--scales", default=None, help="comma-separated sizes (512,768): each batch resized to one at random")
     ap.add_argument("--freeze-stem", type=int, default=0, help="freeze layers 0..N-1 (weights and batch-norm stats)")
     ap.add_argument(
         "--mem-fraction", type=float, default=0.0, help="cap on this process's share of GPU 0 memory (0 = none)"
