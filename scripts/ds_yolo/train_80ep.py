@@ -2,17 +2,21 @@
 
 Rules: cache=disk under the pod's local /data; a copy of weights/last.pt, weights/best.pt, results.csv and args.yaml goes to
 /training_data/<project>/<name>/ every 10 epochs and at the end; on launch the run resumes from the local last.pt, else from
-the backup on /training_data, else starts fresh.
-usage: python train_run.py --model <yaml or .pt> --name <run> [--pretrained <ckpt>] [--epochs 80] [--extra k=v ...]"""
+the backup on /training_data, else starts fresh. --mem-fraction caps this process's share of GPU memory so that several
+runs can share one GPU without one of them failing when their validation phases coincide.
+usage: python train_80ep.py --model <yaml or .pt> --name <run> [--pretrained <ckpt>] [--epochs 80] [--extra k=v ...]"""
 
 import argparse
+import os
 import shutil
 import time
 from pathlib import Path
 
 import yaml
 
-from ultralytics import YOLO
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # before torch is imported
+
+from ultralytics import YOLO  # noqa: E402
 
 LOCAL = Path("/data/runs80")
 BACKUP = Path("/training_data/runs80")
@@ -52,8 +56,16 @@ if __name__ == "__main__":
     ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--every", type=int, default=10)
+    ap.add_argument(
+        "--mem-fraction", type=float, default=0.0, help="cap on this process's share of GPU 0 memory (0 = none)"
+    )
     ap.add_argument("--extra", nargs="*", default=[])
     a = ap.parse_args()
+    if a.mem_fraction > 0:
+        import torch
+
+        torch.cuda.set_per_process_memory_fraction(a.mem_fraction, 0)
+        print(f"MEM FRACTION {a.mem_fraction}", flush=True)
     run_dir = LOCAL / a.name
     local_last = run_dir / "weights" / "last.pt"
     backup_last = BACKUP / a.name / "weights" / "last.pt"
