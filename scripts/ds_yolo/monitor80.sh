@@ -26,7 +26,7 @@ while true; do
         DONE[$n]=$rows
       fi
     fi
-    pgrep -f "train_80ep.py.*--name $n\b" > /dev/null || { [ "${DEAD[$n]:-}" = 1 ] || { log "$n PROCESS NOT RUNNING"; DEAD[$n]=1; }; }
+    pgrep -f "^python scripts/ds_yolo/train_80ep.py .*--name $n\b" > /dev/null || { [ "${DEAD[$n]:-}" = 1 ] || { log "$n PROCESS NOT RUNNING"; DEAD[$n]=1; }; }
   done
   cp $LOCAL $SHARED 2>/dev/null
   sleep 60
