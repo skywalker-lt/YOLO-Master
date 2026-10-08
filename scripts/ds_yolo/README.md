@@ -16,5 +16,8 @@ bash scripts/ds_yolo/launch80.sh                                          # laun
 python scripts/ds_yolo/train_80ep.py --model yolo26m.yaml --name dense80 --pretrained /data/weights/yolo26m-objv1-150.pt
 ```
 
+`monitor80.sh` (started by `launch80.sh`) writes one line per run per minute and one line per completed epoch to
+`/data/runs80/train.log`, mirrored to `/training_data/logs/runs80.log`; follow it with `tail -F`.
+
 `train_80ep.py` resumes from the local `last.pt`, else restores the run from `/training_data/runs80/<run>/` and resumes,
 else starts fresh. Re-running `launch80.sh` after a crash or reboot is safe.

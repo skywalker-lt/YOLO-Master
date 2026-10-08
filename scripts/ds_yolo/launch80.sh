@@ -8,3 +8,5 @@ for spec in "dense80 yolo26m.yaml --pretrained /data/weights/yolo26m-objv1-150.p
   setsid nohup python scripts/ds_yolo/train_80ep.py --model "$@" --name $n >> /data/runs80/$n.out 2>&1 < /dev/null & disown
   echo "launched $n"; sleep 20
 done
+
+pgrep -f "scripts/ds_yolo/monitor80.sh" > /dev/null || { setsid nohup bash scripts/ds_yolo/monitor80.sh > /dev/null 2>&1 < /dev/null & disown; echo "monitor started: tail -F /data/runs80/train.log"; }
